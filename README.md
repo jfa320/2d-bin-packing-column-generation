@@ -1,29 +1,67 @@
 # Bin Packing Bidimensional resuelto con generación de columnas
 
-Este proyecto aborda el problema de Bin Packing Bidimensional (2D-BPP), donde se busca ubicar un conjunto de items rectangulares dentro de un bin rectangular evitando solapamientos entre ellos y respetando las dimensiones del bin. El objetivo es construir una disposicion factible que empaquete la mayor cantidad posible de items, considerando posiciones validas y, segun el modelo utilizado, rotación de los items.
+Este proyecto aborda el problema de Bin Packing Bidimensional (2D-BPP), donde se busca ubicar un conjunto de ítems rectangulares dentro de un bin rectangular evitando solapamientos entre ellos y respetando las dimensiones del bin. El objetivo es construir una disposición factible que empaquete la mayor cantidad posible de ítems, considerando posiciones válidas y, según el modelo utilizado, rotación de los ítems.
+
+## Contexto del proyecto
+
+Este repositorio contiene la implementación desarrollada en el marco de una tesina de grado para la culminación de la Licenciatura en Sistemas de la Universidad Nacional de General Sarmiento.
+
+El trabajo aborda el problema de Bin Packing Bidimensional mediante un enfoque de generación de columnas. El modelo principal se compone de un problema maestro de selección de rebanadas, un problema de pricing para generar nuevas rebanadas y una resolución entera final utilizando las columnas generadas.
 
 ## Enfoque del proyecto actual
 
-La resolucion se basa en generacion de columnas. El problema se descompone en un modelo maestro y un modelo esclavo:
+La resolución se basa en generación de columnas. El problema se descompone en un modelo maestro y un modelo esclavo:
 
-- El modelo maestro selecciona rebanadas ya generadas y controla que no haya colisiones entre los items elegidos.
-- El modelo esclavo usa la informacion dual del maestro para generar nuevas rebanadas candidatas que puedan mejorar la solucion actual.
-- El proceso se repite mientras aparezcan rebanadas nuevas con potencial de mejora. Al finalizar, el maestro se resuelve en version entera con las columnas generadas.
+- El modelo maestro selecciona rebanadas ya generadas y controla que no haya colisiones entre los ítems elegidos.
+- El modelo esclavo usa la información dual del maestro para generar nuevas rebanadas candidatas que puedan mejorar la solución actual.
+- El proceso se repite mientras aparezcan rebanadas nuevas con potencial de mejora. Al finalizar, el maestro se resuelve en versión entera con las columnas generadas.
 
-Para evitar ciclos o repeticiones, la implementacion detecta rebanadas ya generadas y puede agregar restricciones de exclusion al modelo esclavo.
+Para evitar ciclos o repeticiones, la implementación detecta rebanadas ya generadas y puede agregar restricciones de exclusión al modelo esclavo.
+
+## Modelos implementados
+
+| Modelo | Descripción | Uso |
+| --- | --- | --- |
+| Generación de columnas | Modelo maestro-esclavo con generación iterativa de rebanadas | Propuesta principal de la tesina |
+| Backtracking exacto | Resolución exacta adaptada a las instancias monoítem estudiadas | Comparación |
+| Andrade-Birgin | Modelo de referencia adaptado a partir de la formulación de Andrade y Birgin | Comparación |
+| Modelos simplificados | Modelos de la literatura adaptados al 2D-BPP monoítem estudiado en esta tesina | Comparación y validación |
+
+Los modelos de comparación fueron adaptados a partir de formulaciones o enfoques que no coincidían exactamente con el alcance de esta tesina. En particular, algunas formulaciones originales consideran múltiples tipos de ítems, múltiples tamaños o restricciones adicionales, como prioridades entre ítems.
+
+## Estructura del repositorio
+
+```text
+.
+├── Main.py
+├── Config.py
+├── Model_5_Orchestrator.py
+├── Model_5_Custom_Master.py
+├── Model_5_Custom_Slave_Alternative.py
+├── Model_6_Andrade_Birgin_Monoitem.py
+├── Model_7_Exact_Monoitem_Backtracking.py
+├── Objects/
+├── Utils/
+├── OtherModels/
+├── archive/
+├── tests/
+├── Docs/
+├── Results/
+└── requirements.txt
+```
 
 ## Requisitos
 
 - Python 3.10
 - IBM ILOG CPLEX Optimization Studio
 - API de CPLEX para Python
-- Una licencia valida de CPLEX
+- Una licencia válida de CPLEX
 - `pip`
 - `pytest`, para ejecutar tests
 
-Este proyecto fue desarrollado utilizando IBM ILOG CPLEX Optimization Studio. La edicion gratuita de CPLEX posee limites en la cantidad de variables y restricciones, por lo que puede no ser suficiente para ejecutar todas las instancias. Para instancias mas grandes puede requerirse una licencia academica o comercial habilitada.
+Este proyecto fue desarrollado utilizando IBM ILOG CPLEX Optimization Studio. La edición gratuita de CPLEX posee límites en la cantidad de variables y restricciones, por lo que puede no ser suficiente para ejecutar todas las instancias. Para instancias más grandes puede requerirse una licencia académica o comercial habilitada.
 
-## Instalacion
+## Instalación
 
 Crear un entorno virtual:
 
@@ -43,25 +81,15 @@ Instalar dependencias:
 pip install -r requirements.txt
 ```
 
-Verificar que CPLEX este disponible:
+Verificar que CPLEX esté disponible:
 
 ```bash
 python -c "import cplex; print(cplex.__version__)"
 ```
 
-Nota: la dependencia `cplex` requiere una instalacion valida de IBM ILOG CPLEX Optimization Studio y una version de Python soportada por esa instalacion. Si `pip install cplex` no funciona, instalar la API de Python desde la carpeta de instalacion de CPLEX correspondiente a la version de Python usada.
+Nota: la dependencia `cplex` requiere una instalación válida de IBM ILOG CPLEX Optimization Studio y una versión de Python soportada por esa instalación. Si `pip install cplex` no funciona, instalar la API de Python desde la carpeta de instalación de CPLEX correspondiente a la versión de Python usada.
 
-Ejecutar tests:
-
-```bash
-pytest
-```
-
-## Algoritmo
-
-La descripcion detallada del algoritmo, las condiciones de corte y el rol de cada modelo estan documentados en [`Docs/algorithm.md`](Docs/algorithm.md).
-
-## Ejecucion de instancias
+## Ejecución de instancias
 
 Las instancias se configuran en [`Config.py`](Config.py). Cada instancia tiene un nombre propio (`caso2`, `caso7`, etc.) que se usa como `InputFileName` en el archivo `.trc` de PAVER.
 
@@ -85,25 +113,25 @@ Para ejecutar varias instancias en una misma corrida:
 python Main.py --cases caso2 caso4 caso7
 ```
 
-Para ejecutar todas las instancias cargadas en el catalogo:
+Para ejecutar todas las instancias cargadas en el catálogo:
 
 ```bash
 python Main.py --all
 ```
 
-Tambien se puede cambiar el tiempo limite por modelo:
+También se puede cambiar el tiempo límite por modelo:
 
 ```bash
 python Main.py --cases caso2 caso4 caso7 --time 1200
 ```
 
-La salida se guarda por defecto en `Resultados/output.trc`. Se puede cambiar el nombre del archivo con:
+La salida se guarda por defecto en `Results/output.trc`. Se puede cambiar el nombre del archivo con:
 
 ```bash
 python Main.py --case caso7 --output output_caso7.trc
 ```
 
-La estructura esperada para PAVER es una fila por combinacion de instancia y modelo, por ejemplo:
+La estructura esperada para PAVER es una fila por combinación de instancia y modelo, por ejemplo:
 
 ```text
 caso2,Model5Orchestrator,...
@@ -111,3 +139,13 @@ caso2,BacktrackingMonoitemExacto,...
 caso4,Model5Orchestrator,...
 caso4,BacktrackingMonoitemExacto,...
 ```
+
+## Ejecución de pruebas
+
+```bash
+pytest
+```
+
+## Algoritmo
+
+La descripción detallada del algoritmo, las condiciones de corte y el rol de cada modelo están documentados en [`Docs/algorithm.md`](Docs/algorithm.md).
