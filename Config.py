@@ -2,6 +2,8 @@
 
 DEFAULT_CASE_NAME = "case7"
 
+REQUIRED_INSTANCE_FIELDS = ("bin_width", "bin_height", "item_width", "item_height")
+
 INSTANCES = {
     "case1": {
         "bin_width": 6,
@@ -15,7 +17,6 @@ INSTANCES = {
         "bin_height": 5,
         "item_width": 3,
         "item_height": 2,
-        "optimum": 4,
     },
     "case3": {
         "bin_width": 6,
@@ -132,7 +133,30 @@ INSTANCES = {
 }
 
 
+def _validate_positive_integer(case_name, instance, field_name):
+    value = instance[field_name]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Invalid config for {case_name}: {field_name} must be an integer")
+    if value <= 0:
+        raise ValueError(f"Invalid config for {case_name}: {field_name} must be greater than 0")
+
+
+def _validate_instance(case_name, instance):
+    for field_name in REQUIRED_INSTANCE_FIELDS:
+        if field_name not in instance:
+            raise ValueError(f"Invalid config for {case_name}: missing required field {field_name}")
+        _validate_positive_integer(case_name, instance, field_name)
+
+    if "optimum" in instance and instance["optimum"] is not None:
+        optimum = instance["optimum"]
+        if isinstance(optimum, bool) or not isinstance(optimum, int):
+            raise ValueError(f"Invalid config for {case_name}: optimum must be an integer")
+        if optimum < 0:
+            raise ValueError(f"Invalid config for {case_name}: optimum must be greater than or equal to 0")
+
+
 def _normalize_instance(case_name, instance):
+    _validate_instance(case_name, instance)
     return {
         "case_name": case_name,
         "bin_width": instance["bin_width"],
