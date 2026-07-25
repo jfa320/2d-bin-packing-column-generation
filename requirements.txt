@@ -1,0 +1,4 @@
+numpy==2.1.1
+Pillow==10.4.0
+pytest==9.0.2
+cplex==22.1.1.0

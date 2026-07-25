@@ -12,6 +12,51 @@ La resolucion se basa en generacion de columnas. El problema se descompone en un
 
 Para evitar ciclos o repeticiones, la implementacion detecta rebanadas ya generadas y puede agregar restricciones de exclusion al modelo esclavo.
 
+## Requisitos
+
+- Python 3.10
+- IBM ILOG CPLEX Optimization Studio
+- API de CPLEX para Python
+- Una licencia valida de CPLEX
+- `pip`
+- `pytest`, para ejecutar tests
+
+Este proyecto fue desarrollado utilizando IBM ILOG CPLEX Optimization Studio. La edicion gratuita de CPLEX posee limites en la cantidad de variables y restricciones, por lo que puede no ser suficiente para ejecutar todas las instancias. Para instancias mas grandes puede requerirse una licencia academica o comercial habilitada.
+
+## Instalacion
+
+Crear un entorno virtual:
+
+```bash
+python -m venv .venv
+```
+
+Activarlo en Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Instalar dependencias:
+
+```bash
+pip install -r requirements.txt
+```
+
+Verificar que CPLEX este disponible:
+
+```bash
+python -c "import cplex; print(cplex.__version__)"
+```
+
+Nota: la dependencia `cplex` requiere una instalacion valida de IBM ILOG CPLEX Optimization Studio y una version de Python soportada por esa instalacion. Si `pip install cplex` no funciona, instalar la API de Python desde la carpeta de instalacion de CPLEX correspondiente a la version de Python usada.
+
+Ejecutar tests:
+
+```bash
+pytest
+```
+
 ## Algoritmo
 
 La descripcion detallada del algoritmo, las condiciones de corte y el rol de cada modelo estan documentados en [`Docs/algorithm.md`](Docs/algorithm.md).
