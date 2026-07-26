@@ -2,6 +2,10 @@
 
 DEFAULT_CASE_NAME = "case7"
 
+# Enables practical enhancements used to improve column diversity and robustness.
+# Set to False to run a cleaner canonical column-generation loop.
+USE_PRACTICAL_CG_ENHANCEMENTS = False
+
 REQUIRED_INSTANCE_FIELDS = ("bin_width", "bin_height", "item_width", "item_height")
 
 INSTANCES = {

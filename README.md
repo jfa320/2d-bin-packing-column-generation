@@ -148,4 +148,8 @@ pytest
 
 ## Algoritmo
 
-La descripción detallada del algoritmo, las condiciones de corte y el rol de cada modelo están documentados en [`Docs/algorithm.md`](Docs/algorithm.md).
+La implementación utiliza un esquema de generación de columnas compuesto por un modelo maestro y un modelo esclavo, también denominado problema de *pricing*.
+
+El modelo maestro selecciona las rebanadas que forman la solución y el modelo esclavo genera nuevas columnas a partir de los valores duales.
+
+La descripción detallada, las condiciones de corte, el rol de cada modelo y el diagrama del flujo están documentados en [`Docs/algorithm.md`](Docs/algorithm.md).

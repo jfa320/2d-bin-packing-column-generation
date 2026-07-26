@@ -384,6 +384,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             # If the slave objective is at most EPS, there is no significant improvement yet,
             # but a few additional slices are generated before stopping.
             if objective_value_slave_model <= EPS:
+                if not USE_PRACTICAL_CG_ENHANCEMENTS:
+                    print("No positive reduced-cost column found. Stopping generation.")
+                    break
+
                 excluded_solutions = []
 
                 # Exclude the current slave solution to force a new slice in the next iteration
@@ -466,6 +470,11 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     f"occupationDualSum={dual_sum}, "
                     f"fullReducedCost={reduced_cost_real}"
                 )
+
+                if not USE_PRACTICAL_CG_ENHANCEMENTS:
+                    print("Duplicate positive reduced-cost column returned by pricing. Stopping generation.")
+                    break
+
                 excluded_solutions = []
                 if active_variables:
                     excluded_solutions.append(active_variables)
@@ -534,7 +543,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             slices.append(new_slice)
 
             # Update the counter of iterations without master improvement
-            if previous_master_objective is not None:
+            if USE_PRACTICAL_CG_ENHANCEMENTS and previous_master_objective is not None:
                 master_improvement = objective_master - previous_master_objective
                 if abs(master_improvement) <= EPS_MASTER:
                     iterations_without_improvement += 1
@@ -542,7 +551,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     iterations_without_improvement = 0
 
             # Stop if the master does not improve after MAX_STAGNATION iterations
-            if iterations_without_improvement >= MAX_STAGNATION:
+            if USE_PRACTICAL_CG_ENHANCEMENTS and iterations_without_improvement >= MAX_STAGNATION:
                 print("Stopping because of numeric master stagnation.")
                 break
 

@@ -1,23 +1,53 @@
 # Algoritmo
 
-El programa en detalle funciona de la siguiente manera:
+## Flujo general del algoritmo
 
-1. Se define la configuración del caso (ancho y alto del bin, dimensiones del item, cantidad de ítems a empaquetar)
-2. Se generan posiciones válidas (rotadas y no rotadas) dentro del bin en función de la configuración
-3. Se genera un conjunto inicial de rebanadas para inicializar el modelo maestro
-4. Se construye el modelo maestro relajado utilizando las rebanadas actuales, las posiciones y la configuración
-5. Se resuelve el modelo maestro y se obtienen los valores duales asociados a las restricciones de ocupación (evitan colisiones)
-6. Se construye el modelo esclavo utilizando los duales del maestro, las posiciones y la configuración
-7. Se resuelve el modelo esclavo y se obtiene una rebanada candidata. Si la rebanada es nueva y tiene potencial de mejora, se agrega al maestro. Luego vuelvo al paso 4
+El enfoque implementado utiliza un esquema de generación de columnas compuesto por un modelo maestro y un modelo esclavo, también denominado problema de *pricing*.
+
+El modelo maestro selecciona las rebanadas que forman la solución, mientras que el modelo esclavo genera nuevas rebanadas a partir de los valores duales obtenidos al resolver la relajación lineal del maestro.
+
+```mermaid
+flowchart TD
+    A[Definir la instancia] --> B[Generar posiciones válidas]
+    B --> C[Generar rebanadas iniciales]
+    C --> D[Inicializar el modelo maestro]
+    D --> E[Resolver el modelo maestro relajado]
+    E --> F[Obtener los valores duales]
+    F --> G[Resolver el modelo esclavo<br/>o problema de pricing]
+
+    G --> H{¿Se encontró una rebanada<br/>mejorante?}
+
+    H -- Sí --> I{¿La rebanada ya existe?}
+
+    I -- No --> J[Agregar la rebanada<br/>como nueva columna del maestro]
+    J --> E
+
+    I -- Sí --> K[Agregar un no-good cut<br/>al modelo esclavo]
+    K --> G
+
+    H -- No --> L[Finalizar la generación de columnas]
+    L --> M[Resolver el modelo maestro entero]
+    M --> N[Obtener la solución final]
+```
+
+El proceso comienza con la definición de la instancia, la generación de las posiciones válidas y la construcción de un conjunto inicial de rebanadas.
+
+A continuación, se resuelve la relajación lineal del modelo maestro y se obtienen sus valores duales. Estos valores son utilizados por el modelo esclavo o problema de *pricing* para buscar una nueva rebanada mejorante.
+
+Si la rebanada encontrada todavía no forma parte del maestro, se incorpora como una nueva columna y se vuelve a resolver el modelo maestro relajado.
+
+Si la rebanada ya había sido generada, se agrega un *no-good cut* al modelo esclavo para excluir esa solución y buscar una rebanada alternativa.
+
+Cuando el modelo esclavo no encuentra nuevas rebanadas mejorantes, finaliza la generación de columnas. Finalmente, se resuelve el modelo maestro entero utilizando las columnas generadas y se obtiene la solución final.
 
 ## Condiciones de corte:
 
-8. Si el modelo esclavo no genera una rebanada válida, se detiene el proceso.
-9. Si el modelo esclavo devuelve una rebanada ya generada previamente, la rebanada no se agrega. En su lugar, se agrega una restricción de exclusión (no-good cut) para excluir esa solución del esclavo y se intenta buscar una alternativa durante un número acotado de iteraciones. Si no se encuentra una alternativa nueva mejorante, se detiene la generación.
-10. Si el costo reducido es cercano a cero, se permite una fase adicional de exploración para buscar rebanadas alternativas. Esta fase está acotada por un máximo de M iteraciones.
-11. Si el modelo maestro no mejora luego de N iteraciones, se detiene el proceso por posible estancamiento.
-12. El proceso iterativo continúa desde el paso 4 hasta que se cumple alguna condición de corte
-13. Finalmente, se resuelve el modelo maestro en su versión entera con todas las rebanadas generadas para obtener la solución final
+1. Si el modelo esclavo no genera una rebanada válida, se detiene el proceso.
+2. Si el modelo esclavo devuelve una rebanada ya generada previamente, la rebanada no se agrega. En su lugar, se agrega una restricción de exclusión (no-good cut) para excluir esa solución del esclavo y se intenta buscar una alternativa durante un número acotado de iteraciones. Si no se encuentra una alternativa nueva mejorante, se detiene la generación.
+3. Si el costo reducido es cercano a cero, se permite una fase adicional de exploración para buscar rebanadas alternativas. Esta fase está acotada por un máximo de M iteraciones.
+4. Si el modelo maestro no mejora luego de N iteraciones, se detiene el proceso por posible estancamiento.
+5. El proceso iterativo continúa resolviendo el modelo maestro relajado y el modelo esclavo hasta que se cumple alguna condición de corte.
+6. Finalmente, se resuelve el modelo maestro en su versión entera con todas las rebanadas generadas para obtener la solución final.
 
 ---
 ## En cada iteración:

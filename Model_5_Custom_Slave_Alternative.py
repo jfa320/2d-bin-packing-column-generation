@@ -363,6 +363,11 @@ def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
 
     print_summary("Phase 1 summary", phase_1_objective_value, phase_1_items)
 
+    if not USE_PRACTICAL_CG_ENHANCEMENTS:
+        print("Practical CG enhancements disabled. Keeping phase 1 solution.")
+        print("OUT - Solve Slave Model")
+        return phase_1_slice, phase_1_objective_value, phase_1_active_variables
+
     # =========================================================
     # PHASE 2: optional structural improvement attempt
     # Keep the original objective almost unchanged and maximize item count
