@@ -122,13 +122,13 @@ python Main.py --all
 También se puede cambiar el tiempo límite por modelo:
 
 ```bash
-python Main.py --cases caso2 caso4 caso7 --time 1200
+python Main.py --cases case2 case4 case7 --time 1200
 ```
 
 La salida se guarda por defecto en `Results/output.trc`. Se puede cambiar el nombre del archivo con:
 
 ```bash
-python Main.py --case caso7 --output output_caso7.trc
+python Main.py --case case7 --output output_case7.trc
 ```
 
 La estructura esperada para PAVER es una fila por combinación de instancia y modelo, por ejemplo:
