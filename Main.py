@@ -2,7 +2,7 @@ import argparse
 
 import Model_1_Simplified_Section_2_8_No_Rotation
 import Model_1_Simplified_Section_2_9_With_Rotation
-import Model_5_Orchestrator
+from column_generation import column_generation_solver
 import Model_6_Andrade_Birgin_Monoitem
 import Model_7_Exact_Monoitem_Backtracking
 from Config import DEFAULT_CASE_NAME, get_instance, list_instance_names
@@ -12,7 +12,7 @@ from trace_file_generator import TraceFileGenerator
 DEFAULT_EXECUTION_TIME = 1200  # Execution time in seconds for each model; can be changed through the CLI.
 
 MODELS = [
-    Model_5_Orchestrator,
+    column_generation_solver,
     Model_1_Simplified_Section_2_8_No_Rotation,
     Model_1_Simplified_Section_2_9_With_Rotation,
     Model_6_Andrade_Birgin_Monoitem,

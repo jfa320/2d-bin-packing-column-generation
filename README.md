@@ -35,14 +35,12 @@ Los modelos de comparación fueron adaptados a partir de formulaciones o enfoque
 .
 ├── Main.py
 ├── Config.py
-├── Model_5_Orchestrator.py
-├── Model_5_Custom_Master.py
-├── Model_5_Custom_Slave_Alternative.py
+├── column_generation/
 ├── Model_6_Andrade_Birgin_Monoitem.py
 ├── Model_7_Exact_Monoitem_Backtracking.py
 ├── Objects/
 ├── Utils/
-├── OtherModels/
+├── reference_models/
 ├── archive/
 ├── tests/
 ├── Docs/

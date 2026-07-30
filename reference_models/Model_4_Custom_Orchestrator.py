@@ -1,5 +1,5 @@
-from models.comparison.Model_4_Custom_Master import create_and_solve_master_model
-from models.comparison.Model_4_Custom_Slave import create_and_solve_slave_model, find_highest_height
+from reference_models.Model_4_Custom_Master import create_and_solve_master_model
+from reference_models.Model_4_Custom_Slave import create_and_solve_slave_model, find_highest_height
 
 from Objects import Slice
 from Objects import Item

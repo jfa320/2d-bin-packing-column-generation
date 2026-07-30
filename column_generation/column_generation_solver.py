@@ -6,8 +6,8 @@ from Objects import Slice
 from Objects import Item
 
 from position_generator import generate_positions_xym2
-from Model_5_Custom_Master import * 
-from Model_5_Custom_Slave_Alternative import * 
+from column_generation.master_problem import * 
+from column_generation.pricing_problem import * 
 from Config import *
 from Utils.bin_visualization import export_bin_solution_to_png
 
