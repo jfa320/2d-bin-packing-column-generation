@@ -1,12 +1,12 @@
 import cplex
 from cplex.exceptions import CplexSolverError
-from trace_file_generator import TraceFileGenerator
+from utils.trace_file_generator import TraceFileGenerator
 
 
-from Objects import Slice
-from Objects import Item
+from objects import Slice
+from objects import Item
 
-from position_generator import *
+from models.common.position_generator import *
 
 NOMBRE_MODELO="Model4Maestro"
 

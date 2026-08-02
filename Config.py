@@ -21,6 +21,7 @@ INSTANCES = {
         "bin_height": 5,
         "item_width": 3,
         "item_height": 2,
+        "optimum": 4,
     },
     "case3": {
         "bin_width": 6,
@@ -134,6 +135,50 @@ INSTANCES = {
         "item_height": 6,
         "optimum": 50,
     },
+    "case19": {
+        "bin_width": 6,
+        "bin_height": 6,
+        "item_width": 3,
+        "item_height": 2,
+        "optimum": 6,
+    },
+    "case20": {
+        "bin_width": 20,
+        "bin_height": 20,
+        "item_width": 1,
+        "item_height": 6,
+    },
+    "case21": {
+        "bin_width": 20,
+        "bin_height": 20,
+        "item_width": 2,
+        "item_height": 8,
+    },
+    "case22": {
+        "bin_width": 20,
+        "bin_height": 20,
+        "item_width": 4,
+        "item_height": 9,
+    },
+    "case23": {
+        "bin_width": 20,
+        "bin_height": 20,
+        "item_width": 8,
+        "item_height": 7,
+    },
+    "case24": {
+        "bin_width": 20,
+        "bin_height": 20,
+        "item_width": 7,
+        "item_height": 5,
+        "optimum": 10,
+    },
+    "case25": {
+        "bin_width": 10,
+        "bin_height": 30,
+        "item_width": 2,
+        "item_height": 8,
+    },
 }
 
 
@@ -195,5 +240,5 @@ def set_current_instance(case_name):
     return instance
 
 
-# Historical variables for scripts that still import Config.*
+# Historical variables for scripts that still import config.*
 set_current_instance(DEFAULT_CASE_NAME)

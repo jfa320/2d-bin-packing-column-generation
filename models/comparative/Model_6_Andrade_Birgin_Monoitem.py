@@ -2,8 +2,8 @@ import cplex
 from cplex.exceptions import CplexSolverError
 import multiprocessing
 import time
-from Utils.model_functions import *
-from Config import *
+from utils.model_functions import *
+from config import *
 
 MODEL_NAME = "AndradeBirginBigM"
 

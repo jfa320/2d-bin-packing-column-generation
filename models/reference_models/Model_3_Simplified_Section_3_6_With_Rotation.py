@@ -2,9 +2,9 @@ import cplex
 from cplex.exceptions import CplexSolverError
 import multiprocessing
 import time
-from position_generator import generate_positions_cid_garcia, create_c_matrix
-from Utils.model_functions import *
-from Config import *
+from models.common.position_generator import generate_positions_cid_garcia, create_c_matrix
+from utils.model_functions import *
+from config import *
 
 MODEL_NAME="Model3Pos2"
 
@@ -15,14 +15,21 @@ w = ITEM_WIDTH # Ancho del item
 h = ITEM_HEIGHT  # Alto del item
 
 I = range(ITEMS_COUNT)  # Item set
-#J = generate_positions2_without_rotation(W, H, w, h) #posiciones
-J = generate_positions_cid_garcia(W, H, w, h) #posiciones
-P = [(x, y) for x in range(W) for y in range(H)]  #puntos
-C = create_c_matrix(W, H, J,w,h,P)
+# J = generate_positions2_without_rotation(W, H, w, h)  # Posiciones sin rotación
+J = generate_positions_cid_garcia(W, H, w, h)  # Posiciones sin rotación
 
-# Conjunto de posiciones válidas por item 
+# J_rot = generate_positions2_without_rotation(W, H, h, w)  # Posiciones con rotación de 90 grados
+J_rot = generate_positions_cid_garcia(W, H, h, w)  # Posiciones con rotación de 90 grados
+
+P = [(x, y) for x in range(W) for y in range(H)]  # Puntos del bin
+C = create_c_matrix(W, H, J, w, h, P)  # Matriz C para posiciones sin rotación
+C_rot = create_c_matrix(W, H, J_rot, h, w, P)  # Matriz C para posiciones rotadas
+
+# Conjunto de posiciones válidas por ítem
 T = J
-Q = len(T)  # Cantidad total de posiciones válidas por item
+T_rot = J_rot
+Q = len(T)  # Cantidad total de posiciones válidas por ítem
+Q_rot = len(T_rot)  # Cantidad total de posiciones válidas rotadas por ítem
 
 def create_and_solve_model(queue, manual_interruption, max_time):
     #valores por default para enviar a paver
@@ -37,34 +44,51 @@ def create_and_solve_model(queue, manual_interruption, max_time):
         
         initial_time=model.get_time()
 
-        # Definir variables y objetivos
+        # Variables
         n_vars = []
         x_vars = []
+        y_vars = []
+
         # Añadir las variables n_i
         for i in I:
-            var_names = f"n_{i}"
-            model.variables.add(names=[var_names], types=[model.variables.type.binary])
-            n_vars.append(var_names)
+            var_name = f"n_{i}"
+            model.variables.add(names=[var_name], types=[model.variables.type.binary])
+            n_vars.append(var_name)
+
         # Añadir las variables x_j^i
         for i in I:
             x_vars_i = []
             for j in T:
-                var_names = f"x_{j}^{i}"
-                model.variables.add(names=[var_names], types=[model.variables.type.binary])
-                x_vars_i.append(var_names)
+                var_name = f"x_{j}^{i}"
+                model.variables.add(names=[var_name], types=[model.variables.type.binary])
+                x_vars_i.append(var_name)
             x_vars.append(x_vars_i)
+
+        # Añadir las variables y_j^i para las posiciones rotadas
+        for i in I:
+            y_vars_i = []
+            for j in T_rot:
+                var_name = f"y_{j}^{i}"
+                model.variables.add(names=[var_name], types=[model.variables.type.binary])
+                y_vars_i.append(var_name)
+            y_vars.append(y_vars_i)
+
         # Función objetivo: maximizar la suma de n_i
         objective = [1.0] * len(I)
         model.objective.set_linear(list(zip(n_vars, objective)))
-        
-        # Restricción 1: Cada punto del bin está ocupado por a lo sumo un item
-        for index_p,_ in enumerate(P):
+
+        # Restricción 1: Cada punto del bin está ocupado por a lo sumo un ítem (incluyendo rotaciones)
+        for index_p, _ in enumerate(P):
             indexes = []
             coefficients = []
             for i in I:
-                for index_j,j in enumerate(T):
+                for index_j, j in enumerate(T):
                     if C[index_j][index_p] == 1:
                         indexes.append(f"x_{j}^{i}")
+                        coefficients.append(1.0)
+                for index_j, j in enumerate(T_rot):
+                    if C_rot[index_j][index_p] == 1:
+                        indexes.append(f"y_{j}^{i}")
                         coefficients.append(1.0)
             constraint_rhs=1.0
             constraint_sense="L"
@@ -73,23 +97,33 @@ def create_and_solve_model(queue, manual_interruption, max_time):
         # Restricción 2: No exceder el área del bin
         indexes = []
         coefficients = []
-        seen_indexes = set()  # Conjunto para verificar duplicados
+        seen_indices = set()
+
         for i in I:
             for index_j, j in enumerate(T):
                 for index_p, _ in enumerate(P):
                     if C[index_j][index_p] == 1:
-                        var_names = f"x_{j}^{i}"
-                        if var_names not in seen_indexes:  # Verificar si ya se ha agregado
-                            indexes.append(var_names)
+                        var_name = f"x_{j}^{i}"
+                        if var_name not in seen_indices:
+                            indexes.append(var_name)
                             coefficients.append(1.0)
-                            seen_indexes.add(var_names)  # Marcar como agregado
+                            seen_indices.add(var_name)
+            for index_j, j in enumerate(T_rot):
+                for index_p, _ in enumerate(P):
+                    if C_rot[index_j][index_p] == 1:
+                        var_name = f"y_{j}^{i}"
+                        if var_name not in seen_indices:
+                            indexes.append(var_name)
+                            coefficients.append(1.0)
+                            seen_indices.add(var_name)
         constraint_rhs=W * H
         constraint_sense="L"
         add_constraint(model,coefficients,indexes,constraint_rhs,constraint_sense)
-        # Restricción 3: n_i <= suma(x_j^i)
+
+        # Restricción 3: n_i <= suma(x_j^i + y_j^i)
         for i in I:
-            indexes = [f"x_{j}^{i}" for j in T]
-            coefficients = [1.0] * len(T)
+            indexes = [f"x_{j}^{i}" for j in T] + [f"y_{j}^{i}" for j in T_rot]
+            coefficients = [1.0] * (len(T) + len(T_rot))
             indexes.append(f"n_{i}")
             coefficients.append(-1.0)
             constraint_rhs=0.0
@@ -106,16 +140,30 @@ def create_and_solve_model(queue, manual_interruption, max_time):
             constraint_sense="L"
             add_constraint(model,coefficients,indexes,constraint_rhs,constraint_sense)
 
+        # Restricción 5: suma(y_j^i) <= Q_rot(i) * n_i
+        for i in I:
+            indexes = [f"y_{j}^{i}" for j in T_rot]
+            coefficients = [1.0] * len(T_rot)
+            indexes.append(f"n_{i}")
+            coefficients.append(-Q_rot)
+            constraint_rhs=0.0
+            constraint_sense="L"
+            add_constraint(model,coefficients,indexes,constraint_rhs,constraint_sense)
+
         # Desactivar la interrupción manual aquí
         manual_interruption.value = False
 
         # Resolver el modelo
         model.solve()
-
         objective_value = model.solution.get_objective_value()
 
         # Imprimir resultados
         print("Optimal value:", objective_value)
+        
+        # #imprimo valor que toman las variables
+        # for i, var_name in enumerate(n_vars):
+        #     print(f"{var_name} = {model.solution.get_values(var_name)}")
+
 
         status = model.solution.get_status()
         final_time = model.get_time()
@@ -139,7 +187,6 @@ def create_and_solve_model(queue, manual_interruption, max_time):
 
 def execute_with_time_limit(max_time):
     global model_status, solver_status, objective_value, solver_time 
-
     # Crear una cola para recibir los resultados del subproceso
     queue = multiprocessing.Queue()
 

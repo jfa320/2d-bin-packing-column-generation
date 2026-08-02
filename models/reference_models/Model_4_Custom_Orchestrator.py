@@ -1,13 +1,13 @@
-from reference_models.Model_4_Custom_Master import create_and_solve_master_model
-from reference_models.Model_4_Custom_Slave import create_and_solve_slave_model, find_highest_height
+from models.reference_models.Model_4_Custom_Master import create_and_solve_master_model
+from models.reference_models.Model_4_Custom_Slave import create_and_solve_slave_model, find_highest_height
 
-from Objects import Slice
-from Objects import Item
+from objects import Slice
+from objects import Item
 
 import multiprocessing
 import time
 
-from trace_file_generator import TraceFileGenerator
+from utils.trace_file_generator import TraceFileGenerator
 
 MODEL_NAME="Model4"
 

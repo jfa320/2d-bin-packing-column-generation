@@ -3,7 +3,7 @@ import multiprocessing
 import time
 from functools import lru_cache
 
-from Config import *
+from config import *
 
 
 MODEL_NAME = "BacktrackingMonoitemExacto"

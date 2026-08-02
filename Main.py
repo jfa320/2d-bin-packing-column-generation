@@ -1,12 +1,12 @@
 import argparse
 
-import Model_1_Simplified_Section_2_8_No_Rotation
-import Model_1_Simplified_Section_2_9_With_Rotation
-from column_generation import column_generation_solver
-import Model_6_Andrade_Birgin_Monoitem
-import Model_7_Exact_Monoitem_Backtracking
-from Config import DEFAULT_CASE_NAME, get_instance, list_instance_names
-from trace_file_generator import TraceFileGenerator
+from models.column_generation import column_generation_solver
+from models.comparative import Model_1_Simplified_Section_2_8_No_Rotation
+from models.comparative import Model_1_Simplified_Section_2_9_With_Rotation
+from models.comparative import Model_6_Andrade_Birgin_Monoitem
+from models.comparative import Model_7_Exact_Monoitem_Backtracking
+from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
+from utils.trace_file_generator import TraceFileGenerator
 
 
 DEFAULT_EXECUTION_TIME = 1200  # Execution time in seconds for each model; can be changed through the CLI.
@@ -45,11 +45,6 @@ def main():
 
     for case_name in selected_case_names(args):
         instance = get_instance(case_name)
-        print(
-            f"Running {instance['case_name']}: "
-            f"bin=({instance['bin_width']},{instance['bin_height']}), "
-            f"item=({instance['item_width']},{instance['item_height']})"
-        )
 
         for model in MODELS:
             print(f"Model: {model.MODEL_NAME}")

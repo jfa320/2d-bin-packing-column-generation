@@ -1,9 +1,9 @@
 import cplex
 from cplex.exceptions import CplexSolverError
-from Utils.model_functions import *
-from Config import *
-from Objects import Slice
-from Objects import Item
+from utils.model_functions import *
+from config import *
+from objects import Slice
+from objects import Item
 
 MODEL_NAME = "Model5SlaveAlternative"
 DISABLE_DUPLICATE_CONSTRAINT_CHECK = True  # Set True to disable duplicate constraint checks

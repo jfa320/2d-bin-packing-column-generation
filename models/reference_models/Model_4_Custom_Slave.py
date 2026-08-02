@@ -1,12 +1,12 @@
 import cplex
 from cplex.exceptions import CplexSolverError
-from trace_file_generator import TraceFileGenerator
-from Objects import Slice
-from Objects import Item
+from utils.trace_file_generator import TraceFileGenerator
+from objects import Slice
+from objects import Item
 import multiprocessing
 import time
 
-from position_generator import *
+from models.common.position_generator import *
 
 MODEL_NAME="Model4Esclavo"
 

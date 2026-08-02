@@ -2,16 +2,16 @@ import multiprocessing
 import os
 import math
 import time
-from Objects import Slice
-from Objects import Item
+from objects import Slice
+from objects import Item
 
-from position_generator import generate_positions_xym2
-from column_generation.master_problem import * 
-from column_generation.pricing_problem import * 
-from Config import *
-from Utils.bin_visualization import export_bin_solution_to_png
+from models.common.position_generator import generate_positions_xym2
+from models.column_generation.master_problem import * 
+from models.column_generation.slave_problem import * 
+from config import *
+from utils.bin_visualization import export_bin_solution_to_png
 
-from Objects.ConfigData import ConfigData
+from objects.ConfigData import ConfigData
 
 MODEL_NAME = "Model5Orchestrator"
 

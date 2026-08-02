@@ -1,4 +1,4 @@
-from Objects import Item
+from objects import Item
 
 class Slice:
     _id_counter = 1

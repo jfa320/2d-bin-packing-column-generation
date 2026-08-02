@@ -2,9 +2,9 @@ import cplex
 from cplex.exceptions import CplexSolverError
 import multiprocessing
 import time
-from position_generator import generate_positions_castro
-from Utils.model_functions import *
-from Config import *
+from models.common.position_generator import generate_positions_castro
+from utils.model_functions import *
+from config import *
 
 #Basado en la simplificacion del modelo 2 del overleaf (modelo discretizado en posiciones) - ver seccion 3.3 de ese documento para modelo completo
 

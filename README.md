@@ -33,17 +33,14 @@ Los modelos de comparación fueron adaptados a partir de formulaciones o enfoque
 
 ```text
 .
-├── Main.py
-├── Config.py
-├── column_generation/
-├── Model_6_Andrade_Birgin_Monoitem.py
-├── Model_7_Exact_Monoitem_Backtracking.py
-├── Objects/
-├── Utils/
-├── reference_models/
+├── main.py
+├── config.py
+├── models/
+├── objects/
+├── utils/
 ├── archive/
 ├── tests/
-├── Docs/
+├── docs/
 ├── Results/
 └── requirements.txt
 ```
@@ -89,44 +86,44 @@ Nota: la dependencia `cplex` requiere una instalación válida de IBM ILOG CPLEX
 
 ## Ejecución de instancias
 
-Las instancias se configuran en [`Config.py`](Config.py). Cada instancia tiene un nombre propio (`caso2`, `caso7`, etc.) que se usa como `InputFileName` en el archivo `.trc` de PAVER.
+Las instancias se configuran en [`config.py`](config.py). Cada instancia tiene un nombre propio (`caso2`, `caso7`, etc.) que se usa como `InputFileName` en el archivo `.trc` de PAVER.
 
-Para ejecutar el caso por defecto, alcanza con correr `Main.py` directamente:
+Para ejecutar el caso por defecto, alcanza con correr `main.py` directamente:
 
 ```bash
-python Main.py
+python main.py
 ```
 
-El caso por defecto se define en `Config.py` mediante `DEFAULT_CASE_NAME`.
+El caso por defecto se define en `config.py` mediante `DEFAULT_CASE_NAME`.
 
 Para ejecutar una instancia puntual:
 
 ```bash
-python Main.py --case caso7
+python main.py --case caso7
 ```
 
 Para ejecutar varias instancias en una misma corrida:
 
 ```bash
-python Main.py --cases caso2 caso4 caso7
+python main.py --cases caso2 caso4 caso7
 ```
 
 Para ejecutar todas las instancias cargadas en el catálogo:
 
 ```bash
-python Main.py --all
+python main.py --all
 ```
 
 También se puede cambiar el tiempo límite por modelo:
 
 ```bash
-python Main.py --cases case2 case4 case7 --time 1200
+python main.py --cases case2 case4 case7 --time 1200
 ```
 
 La salida se guarda por defecto en `Results/output.trc`. Se puede cambiar el nombre del archivo con:
 
 ```bash
-python Main.py --case case7 --output output_case7.trc
+python main.py --case case7 --output output_case7.trc
 ```
 
 La estructura esperada para PAVER es una fila por combinación de instancia y modelo, por ejemplo:
@@ -150,4 +147,4 @@ La implementación utiliza un esquema de generación de columnas compuesto por u
 
 El modelo maestro selecciona las rebanadas que forman la solución y el modelo esclavo genera nuevas columnas a partir de los valores duales.
 
-La descripción detallada, las condiciones de corte, el rol de cada modelo y el diagrama del flujo están documentados en [`Docs/algorithm.md`](Docs/algorithm.md).
+La descripción detallada, las condiciones de corte, el rol de cada modelo y el diagrama del flujo están documentados en [`docs/algorithm.md`](docs/algorithm.md).

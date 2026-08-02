@@ -1,7 +1,7 @@
 import cplex
 from cplex.exceptions import CplexSolverError
-from Utils.model_functions import *
-from Config import *
+from utils.model_functions import *
+from config import *
 
 MODEL_NAME="Model5Master"
 

@@ -1,8 +1,8 @@
 import time
 
 import pytest
-from column_generation.column_generation_solver import orchestrator
-from Objects.ConfigData import ConfigData
+from models.column_generation.column_generation_solver import orchestrator
+from objects.ConfigData import ConfigData
 
 class TestOrchestrator:
     def test_case_1(self, orchestrator_context):
