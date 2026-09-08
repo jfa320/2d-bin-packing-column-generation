@@ -1,0 +1,5 @@
+* Trace Record Definition
+* InputFileName,SolverName,Direction,ModelStatus,TerminationStatus,ObjectiveValue,SolverTime,NumberOfIterations
+IB_SMOKE,Model5Orchestrator,1,8,Normal,5,1.000000,1
+IB_NODE,Model1NoRotation,1,8,NodeLimit,4,2.000000,NA
+IB_TIME,Model1Rotation,1,9,TimeLimit,NA,3.000000,NA

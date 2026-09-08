@@ -1,4 +1,5 @@
 import argparse
+import time
 
 from models.column_generation import column_generation_solver
 from models.comparative import Model_1_Simplified_Section_2_8_No_Rotation
@@ -7,6 +8,7 @@ from models.comparative import Model_6_Andrade_Birgin_Monoitem
 from models.comparative import Model_7_Exact_Monoitem_Backtracking
 from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
 from utils.trace_file_generator import TraceFileGenerator
+from utils.execution_result import ExecutionResult
 
 
 DEFAULT_EXECUTION_TIME = 1200  # Execution time in seconds for each model; can be changed through the CLI.
@@ -28,7 +30,11 @@ def parse_args():
     group.add_argument("--all", action="store_true", help="Run all configured instances.")
     parser.add_argument("--time", type=int, default=DEFAULT_EXECUTION_TIME, help="Time limit per model in seconds.")
     parser.add_argument("--output", default="output.trc", help="Name of the .trc file inside Results.")
-    return parser.parse_args()
+    parser.add_argument("--append", action="store_true", help="Append only new instance/model pairs to a compatible trace.")
+    args = parser.parse_args()
+    if args.time <= 0:
+        parser.error("--time must be positive")
+    return args
 
 
 def selected_case_names(args):
@@ -41,18 +47,25 @@ def selected_case_names(args):
 
 def main():
     args = parse_args()
-    generator = TraceFileGenerator(args.output)
+    cases = selected_case_names(args)
+    if len(cases) != len(set(cases)):
+        raise ValueError("Duplicate case identifiers are not allowed")
+    instances = [get_instance(case_name) for case_name in cases]
+    generator = TraceFileGenerator(args.output, mode="append" if args.append else "overwrite")
 
-    for case_name in selected_case_names(args):
-        instance = get_instance(case_name)
+    for instance in instances:
 
         for model in MODELS:
             print(f"Model: {model.MODEL_NAME}")
-            case_name, model_name, model_status, solver_status, objective_value, solver_time = model.execute_with_time_limit(
-                args.time,
-                instance,
-            )
-            generator.write_trace_record(case_name, model_name, model_status, solver_status, objective_value, solver_time)
+            started = time.perf_counter()
+            try:
+                result = model.execute_with_time_limit(args.time, instance)
+            except Exception as error:
+                result = ExecutionResult(
+                    instance["case_name"], model.MODEL_NAME, 13, "Error", None,
+                    time.perf_counter() - started, error_message=str(error),
+                )
+            generator.write_trace_record(result)
 
 
 if __name__ == '__main__':

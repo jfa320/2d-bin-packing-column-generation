@@ -1,5 +1,11 @@
 # HOWTO --- Uso de PAVER para la comparativa de modelos de la tesina
 
+> **Implementación vigente:** consultar `docs/benchmark_paver.md` para el
+> formato actual de trazas, estados `TerminationStatus` y el runner de
+> benchmark. Las secciones históricas de este documento que muestran
+> `SolverStatus`, `Model1` sin distinguir rotación o tiempos redondeados no
+> describen el formato actual.
+
 > Documento de referencia para recordar qué es PAVER, cómo está
 > instalado actualmente, cómo generar un informe a partir de archivos
 > `.trc` y cómo interpretar las páginas y gráficos principales.

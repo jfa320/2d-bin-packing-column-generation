@@ -1,8 +1,7 @@
 import cplex
-from cplex.exceptions import CplexSolverError
-import multiprocessing
 import time
 from utils.model_functions import *
+from utils.execution_runner import execute_in_process
 from config import *
 
 MODEL_NAME = "AndradeBirginBigM"
@@ -187,114 +186,17 @@ def create_model(max_time):
     return model
 
 
-def solve_model(model, queue, manual_interruption):
-    manual_interruption.value = False
-    initial_time = time.time()
-
-    try:
-        model.solve()
-        solver_time = time.time() - initial_time
-
-        status = model.solution.get_status()
-        status_string = model.solution.get_status_string(status)
-
-        has_solution = model.solution.is_primal_feasible()
-
-        if has_solution:
-            objective_value = model.solution.get_objective_value()
-        else:
-            objective_value = "n/a"
-
-        print("-------------------------------------------")
-        print("Andrade-Birgin model with Big-M")
-        print(f"Optimal value: {objective_value}")
-
-        model_status = "1"
-        solver_status = "1"
-
-        if status == 105:
-            print("The solver stopped because it reached the time limit.")
-            model_status = "2"
-
-        queue.put({
-            "modelStatus": model_status,
-            "solverStatus": solver_status,
-            "objectiveValue": objective_value,
-            "solverTime": solver_time
-        })
-
-    except CplexSolverError as e:
-        solver_time = time.time() - initial_time
-        print(f"CplexSolverError: {e}")
-
-        queue.put({
-            "modelStatus": "14",
-            "solverStatus": "4",
-            "objectiveValue": "n/a",
-            "solverTime": solver_time
-        })
+def solve_model(model):
+    return solve_mip_model(model, CASE_NAME, MODEL_NAME)
 
 
-def run_model(create_model_fn, solve_model_fn, queue, manual_interruption, max_time, instance=None):
-    try:
-        if instance is not None:
-            apply_instance(instance)
-        model = create_model_fn(max_time)
-        solve_model_fn(model, queue, manual_interruption)
-    except Exception as e:
-        print(f"Error while running model: {e}")
-        queue.put({
-            "modelStatus": "14",
-            "solverStatus": "4",
-            "objectiveValue": "n/a",
-            "solverTime": max_time
-        })
+def run_model_for_instance(queue, max_time, instance):
+    apply_instance(instance)
+    run_model(create_model, solve_model, queue, max_time, CASE_NAME, MODEL_NAME)
 
 
-def execute_with_time_limit(max_time, instance=None):
-    global model_status, solver_status, objective_value, solver_time
-    global exceding_limit_time
-
-    exceding_limit_time = False
-
-    queue = multiprocessing.Queue()
-    manual_interruption = multiprocessing.Value('b', True)
-
+def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
+    start = time.perf_counter()
     if instance is None:
         instance = get_instance(CASE_NAME)
-
-    process = multiprocessing.Process(
-        target=run_model,
-        args=(create_model, solve_model, queue, manual_interruption, max_time, instance)
-    )
-
-    process.start()
-    initial_time = time.time()
-
-    while process.is_alive():
-        if manual_interruption.value and time.time() - initial_time > max_time:
-            print("Limit time reached. Aborting process.")
-            model_status = "14"
-            solver_status = "4"
-            solver_time = max_time
-            exceding_limit_time = True
-            process.terminate()
-            process.join()
-            break
-        time.sleep(0.1)
-
-    while not queue.empty():
-        message = queue.get()
-        if isinstance(message, dict):
-            print(message)
-            model_status = message["modelStatus"]
-            solver_status = message["solverStatus"]
-            objective_value = message["objectiveValue"]
-            solver_time = message["solverTime"]
-
-    if exceding_limit_time:
-        print("The model exceeded the execution time limit.")
-        objective_value = "n/a"
-        model_status = "14"
-
-    return instance["case_name"], MODEL_NAME, model_status, solver_status, objective_value, solver_time
+    return execute_in_process(run_model_for_instance, max_time, instance, MODEL_NAME, start)

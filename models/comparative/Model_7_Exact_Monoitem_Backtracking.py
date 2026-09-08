@@ -1,9 +1,10 @@
 import math
-import multiprocessing
 import time
 from functools import lru_cache
 
 from config import *
+from utils.execution_result import ExecutionResult
+from utils.execution_runner import execute_in_process
 
 
 MODEL_NAME = "BacktrackingMonoitemExacto"
@@ -79,7 +80,7 @@ def _search_packing(bin_width, bin_height, item_width, item_height, quantity, al
 
     @lru_cache(maxsize=None)
     def backtracking(state):
-        if deadline is not None and time.time() > deadline:
+        if deadline is not None and time.perf_counter() > deadline:
             raise TimeoutError("Time limit reached during backtracking.")
 
         placed = list(state)
@@ -127,7 +128,7 @@ def solve_exact_monoitem_2dbpp(bin_width, bin_height, item_width, item_height, a
     )
 
     area_upper_bound = (bin_width * bin_height) // (item_width * item_height)
-    deadline = None if max_time is None else time.time() + max_time
+    deadline = None if max_time is None else time.perf_counter() + max_time
 
     for quantity in range(area_upper_bound, 0, -1):
         solution = _search_packing(
@@ -174,7 +175,7 @@ def solve_exact_monoitem_2dbpp(bin_width, bin_height, item_width, item_height, a
 
 
 def _solve_in_process(queue, max_time, instance):
-    start_time = time.time()
+    start_time = time.perf_counter()
     try:
         result = solve_exact_monoitem_2dbpp(
             instance["bin_width"],
@@ -184,7 +185,7 @@ def _solve_in_process(queue, max_time, instance):
             allow_rotation=True,
             max_time=max_time
         )
-        solver_time = time.time() - start_time
+        solver_time = time.perf_counter() - start_time
         print("-------------------------------------------")
         print("Exact monoitem backtracking without LP")
         print(f"Area upper bound: {result['area_upper_bound']}")
@@ -197,56 +198,27 @@ def _solve_in_process(queue, max_time, instance):
                 f"w={item['width']}, h={item['height']}, {rotation_status}"
             )
 
-        queue.put({
-            "modelStatus": "1",
-            "solverStatus": "1",
-            "objectiveValue": result["capacity"],
-            "solverTime": solver_time,
-        })
+        queue.put(ExecutionResult(
+            instance["case_name"], MODEL_NAME, 1, "Normal", float(result["capacity"]), solver_time,
+        ))
     except TimeoutError:
-        queue.put({
-            "modelStatus": "2",
-            "solverStatus": "4",
-            "objectiveValue": "n/a",
-            "solverTime": time.time() - start_time,
-        })
+        queue.put(ExecutionResult(
+            instance["case_name"], MODEL_NAME, 9, "TimeLimit", None, time.perf_counter() - start_time,
+        ))
     except Exception as exc:
         print(f"Exact monoitem backtracking error: {exc}")
-        queue.put({
-            "modelStatus": "14",
-            "solverStatus": "4",
-            "objectiveValue": "n/a",
-            "solverTime": time.time() - start_time,
-        })
+        queue.put(ExecutionResult(
+            instance["case_name"], MODEL_NAME, None, "Error", None,
+            time.perf_counter() - start_time, error_message=str(exc),
+        ))
 
 
-def execute_with_time_limit(max_time, instance=None):
+def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
+    start = time.perf_counter()
     if instance is None:
         instance = get_instance(CASE_NAME)
 
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=_solve_in_process, args=(queue, max_time, instance))
-    process.start()
-    process.join(max_time)
-
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        print("The model exceeded the execution time limit.")
-        return instance["case_name"], MODEL_NAME, "14", "4", "n/a", max_time
-
-    if queue.empty():
-        return instance["case_name"], MODEL_NAME, "14", "4", "n/a", max_time
-
-    message = queue.get()
-    return (
-        instance["case_name"],
-        MODEL_NAME,
-        message["modelStatus"],
-        message["solverStatus"],
-        message["objectiveValue"],
-        message["solverTime"],
-    )
+    return execute_in_process(_solve_in_process, max_time, instance, MODEL_NAME, start)
 
 
 if __name__ == "__main__":

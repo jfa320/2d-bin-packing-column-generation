@@ -2,6 +2,9 @@ import multiprocessing
 import os
 import math
 import time
+from queue import Empty
+from dataclasses import replace
+from utils.execution_result import ExecutionResult, ColumnGenerationMetrics, ColumnGenerationExecutionResult
 from objects import Slice
 from objects import Item
 
@@ -306,7 +309,74 @@ def denormalize_slices_for_output(slices, bin_width_original, bin_height_origina
 
 
 # Main orchestrator
-def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False):
+class _CGProgress:
+    def __init__(self, queue, case_name, started, structured):
+        self.queue = queue
+        self.case_name = case_name
+        self.started = started
+        self.structured = structured
+        self.metrics = ColumnGenerationMetrics()
+        self.termination = "Normal"
+        self.raw_status = None
+        self.last_model_status = None
+        self.final_model_status = None
+        self.error = None
+        self.ip_started = None
+        self.finished = False
+
+    def result(self):
+        now = time.perf_counter()
+        metrics = replace(self.metrics)
+        if not self.finished and self.ip_started is None:
+            metrics = replace(metrics, cg_time_s=now - self.started)
+        elif not self.finished:
+            metrics = replace(metrics, integer_master_time_s=now - self.ip_started)
+        if metrics.restricted_integer_master is not None:
+            model_status = 8
+        elif self.termination == "Error" or self.error:
+            model_status = 13
+        elif self.final_model_status is not None:
+            model_status = self.final_model_status
+        elif self.last_model_status is not None:
+            model_status = self.last_model_status
+        else:
+            model_status = 9
+        return ColumnGenerationExecutionResult(
+            ExecutionResult(self.case_name, MODEL_NAME, model_status,
+                            self.termination, metrics.restricted_integer_master,
+                            now - self.started, self.raw_status, self.error), metrics)
+
+    def snapshot(self):
+        if self.structured:
+            self.queue.put(self.result())
+
+    def put(self, message):
+        if "error" in message:
+            self.error = message["error"]
+            self.termination = "Error"
+        else:
+            state = message["state"]
+            self.last_model_status = state.model_status
+            termination = str(state.termination_status)
+            # A normal final master must not hide an earlier abnormal solve.
+            if self.termination == "Normal" or termination == "Error":
+                self.termination = termination
+                self.raw_status = message["raw_status"]
+            if (message["phase"] == "lp" and state.model_status == 1
+                    and state.has_feasible_solution and message["objective"] is not None):
+                self.metrics = replace(self.metrics, lp_value=message["objective"])
+            if (message["phase"] == "ip" and state.has_feasible_solution
+                    and message["objective"] is not None):
+                self.metrics = replace(self.metrics, restricted_integer_master=message["objective"])
+            if message["phase"] == "ip":
+                self.final_model_status = state.model_status
+        self.snapshot()
+
+
+def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None):
+    progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured)
+    queue = progress
+    practical_enhancements = USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics
     try:
         # Reset the Slice ID counter for each run
         Slice.reset_id_counter()
@@ -355,7 +425,9 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             master_model = create_master_model(max_time, slices, bin_height, bin_width, item_height, item_width, positions_xy_x, positions_xy_y)
             # Solve master model
             objective_master, dual_prices, _ = solve_master_model(master_model, queue, manual_interruption, True, initial_time)
-            pricing_dual_prices = stabilize_duals(
+            if objective_master is None or dual_prices is None:
+                break
+            pricing_dual_prices = dual_prices if finalization_heuristics is False else stabilize_duals(
                 dual_prices,
                 previous_stabilized_dual_prices
             )
@@ -367,7 +439,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 master_improvement = objective_master - previous_master_objective
 
             slave_model = create_slave_model(max_time, positions_xy_x, positions_xy_y, pricing_dual_prices, bin_width, item_height, item_width, bin_height, slice_height)
-            new_slice, objective_value_slave_model, active_variables = solve_slave_model(slave_model, queue, manual_interruption, bin_width, item_height, item_width, slice_height)
+            new_slice, objective_value_slave_model, active_variables = solve_slave_model(slave_model, queue, manual_interruption, bin_width, item_height, item_width, slice_height, finalization_heuristics=finalization_heuristics)
 
             is_duplicate = False
 
@@ -381,10 +453,13 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 print("The slave did not return a feasible solution. Stopping.")
                 break
 
+            progress.metrics = replace(progress.metrics, cg_iterations=progress.metrics.cg_iterations + 1)
+            progress.snapshot()
+
             # If the slave objective is at most EPS, there is no significant improvement yet,
             # but a few additional slices are generated before stopping.
             if objective_value_slave_model <= EPS:
-                if not USE_PRACTICAL_CG_ENHANCEMENTS:
+                if not practical_enhancements:
                     print("No positive reduced-cost column found. Stopping generation.")
                     break
 
@@ -425,7 +500,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                         bin_width,
                         item_height,
                         item_width,
-                        slice_height
+                        slice_height,
+                        finalization_heuristics=finalization_heuristics
                     )
 
                     # Stop extra-slice generation if the slave is infeasible
@@ -454,6 +530,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     if extra_signature not in generated_signatures:
                         slices.append(new_extra_slice)
                         generated_signatures.add(extra_signature)
+                        progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
+                        progress.snapshot()
 
                     # Exclude the current slave solution to force a new slice in the next iteration
                     excluded_solutions.append(extra_active_variables)
@@ -471,7 +549,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     f"fullReducedCost={reduced_cost_real}"
                 )
 
-                if not USE_PRACTICAL_CG_ENHANCEMENTS:
+                if not practical_enhancements:
                     print("Duplicate positive reduced-cost column returned by pricing. Stopping generation.")
                     break
 
@@ -505,7 +583,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                         bin_width,
                         item_height,
                         item_width,
-                        slice_height
+                        slice_height,
+                        finalization_heuristics=finalization_heuristics
                     )
 
                     if objective_value_alternativa is None:
@@ -522,6 +601,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     if alternative_signature not in generated_signatures:
                         slices.append(new_alternative_slice)
                         generated_signatures.add(alternative_signature)
+                        progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
+                        progress.snapshot()
                         added_alternative = True
                         break
 
@@ -541,9 +622,11 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             # Add the new slice and its signature
             generated_signatures.add(signature)
             slices.append(new_slice)
+            progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
+            progress.snapshot()
 
             # Update the counter of iterations without master improvement
-            if USE_PRACTICAL_CG_ENHANCEMENTS and previous_master_objective is not None:
+            if practical_enhancements and previous_master_objective is not None:
                 master_improvement = objective_master - previous_master_objective
                 if abs(master_improvement) <= EPS_MASTER:
                     iterations_without_improvement += 1
@@ -551,7 +634,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     iterations_without_improvement = 0
 
             # Stop if the master does not improve after MAX_STAGNATION iterations
-            if USE_PRACTICAL_CG_ENHANCEMENTS and iterations_without_improvement >= MAX_STAGNATION:
+            if practical_enhancements and iterations_without_improvement >= MAX_STAGNATION:
                 print("Stopping because of numeric master stagnation.")
                 break
 
@@ -560,8 +643,14 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             iteration += 1
 
         # Solve the final integer master model and get the final objective value
+        progress.ip_started = time.perf_counter()
+        progress.metrics = replace(progress.metrics, cg_time_s=progress.ip_started - progress.started)
+        progress.snapshot()
         master_model = create_master_model(max_time, slices, bin_height, bin_width, item_height, item_width, positions_xy_x, positions_xy_y)
         objective_value_slave_model, _, active_master_variables = solve_master_model(master_model, queue, manual_interruption, False, initial_time)
+        progress.metrics = replace(progress.metrics, integer_master_time_s=time.perf_counter() - progress.ip_started)
+        progress.finished = True
+        # Freeze phase times before layout export.
         # Export the final layout using only active slices in the final master solution
         active_slices = get_active_slices(slices, active_master_variables)
         output_active_slices = denormalize_slices_for_output(
@@ -578,73 +667,104 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         else:
             print("No active slice was generated in the final master solution. Layout not exported.")
         # Return result
+        if return_structured:
+            result = progress.result()
+            progress.queue.put({"result": result, "finished": True})
+            return result
         if return_solution:
             return objective_value_slave_model, output_active_slices
 
         return objective_value_slave_model
 
-    except CplexSolverError as e:
-        solver_time = round(time.time() - initial_time, 2)
-        handle_solver_error(e, queue, solver_time)
+    except Exception as e:
+        progress.put({"error": str(e)})
+        if return_structured:
+            result = progress.result()
+            progress.queue.put({"result": result, "finished": True})
+            return result
         if return_solution:
             return None, []
 
         return None
 
-def execute_with_time_limit(max_time, instance=None):
-    global model_status, solver_status, objective_value, solver_time
-    global exceding_limit_time
-    exceding_limit_time = False
-    initial_time = time.time()
+def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None):
+    started = time.perf_counter()
+    result = ColumnGenerationExecutionResult(
+        ExecutionResult(instance.get("case_name", CASE_NAME) if instance is not None else CASE_NAME,
+                        MODEL_NAME, 9, "Error", None, 0.0,
+                        error_message="CG child exited without a result"),
+        ColumnGenerationMetrics())
+    queue = None
+    process = None
+    timed_out = False
+    completed = False
+    try:
+        if instance is None:
+            instance = get_instance(CASE_NAME)
+        queue = multiprocessing.Queue()
+        config_data = ConfigData(
+            bin_width=instance["bin_width"], bin_height=instance["bin_height"],
+            item_width=instance["item_width"], item_height=instance["item_height"])
+        process = multiprocessing.Process(
+            target=orchestrator,
+            args=(queue, multiprocessing.Value('b', True), max_time, started,
+                  config_data, instance["case_name"]),
+            kwargs={"return_structured": True, "finalization_heuristics": finalization_heuristics})
+        process.start()
+        def consume(message):
+            nonlocal result, completed
+            if isinstance(message, ColumnGenerationExecutionResult):
+                result = message
+            elif isinstance(message, dict) and message.get("finished"):
+                result = message["result"]
+                completed = True
 
-    # Create a queue to receive subprocess results
-    queue = multiprocessing.Queue()
-
-    # Create a shared variable to handle manual interruption
-    manual_interruption = multiprocessing.Value('b', True)
-
-    if instance is None:
-        instance = get_instance(CASE_NAME)
-
-    config_data = ConfigData(
-        bin_width=instance["bin_width"],
-        bin_height=instance["bin_height"],
-        item_width=instance["item_width"],
-        item_height=instance["item_height"]
-    )
-
-    # Create the subprocess that runs the function
-    process = multiprocessing.Process(target=orchestrator, args=(queue, manual_interruption, max_time, initial_time, config_data, instance["case_name"]))
-
-    # Start the subprocess
-    process.start()
-
-    # Monitor the queue while the process is running
-    while process.is_alive():
-        if manual_interruption.value and time.time() - initial_time > max_time:
-            print("Limit time reached. Aborting process.")
-            model_status = "14" # PAVER value for a model that returned no answer because of an error
-            solver_status = "4" # The solver finished model execution
-            solver_time = max_time
-            exceding_limit_time = True
+        while True:
+            remaining = max_time - (time.perf_counter() - started)
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                message = queue.get(timeout=min(0.05, remaining))
+                consume(message)
+            except Empty:
+                if not process.is_alive():
+                    break
+        if timed_out and process.is_alive():
             process.terminate()
-            process.join()
-            break
-        time.sleep(0.1)  # Avoid consuming too many resources
-
-    # Print execution results that are later stored in the PAVER trace file
-    while not queue.empty():
-        message = queue.get()
-        if isinstance(message, dict):
-            objective_value = message["objectiveValue"]
-            model_status = message["modelStatus"]
-            solver_status = message["solverStatus"]
-            solver_time = message["solverTime"]
-            print(f"Optimal value: {objective_value}")
-            print(message)
-    if exceding_limit_time:
-        print("The model exceeded the execution time limit.")
-        objective_value = "n/a"
-        model_status = "14"
-
-    return instance["case_name"], MODEL_NAME, model_status, solver_status, objective_value, solver_time
+        process.join(0.5)
+        if process.is_alive():
+            process.kill()
+            process.join(0.5)
+        while True:
+            try:
+                get_nowait = queue.get_nowait
+            except AttributeError:
+                break
+            try:
+                consume(get_nowait())
+            except Empty:
+                break
+        if not timed_out and (process.exitcode or not completed):
+            result = replace(result, execution=replace(result.execution,
+                termination_status="Error", error_message=f"CG child exited with code {process.exitcode}; completed={completed}"))
+        if timed_out:
+            result = replace(result, execution=replace(result.execution,
+                termination_status="TimeLimit", error_message="Wall-clock time limit reached"))
+    except Exception as exc:
+        result = replace(result, execution=replace(result.execution,
+            termination_status="Error", error_message=str(exc)))
+    except KeyboardInterrupt:
+        result = replace(result, execution=replace(result.execution,
+            termination_status="UserInterrupt", error_message="Execution interrupted by user"))
+    finally:
+        if process is not None and process.is_alive():
+            process.terminate()
+            process.join(0.5)
+            if process.is_alive():
+                process.kill()
+                process.join(0.5)
+        if queue is not None:
+            queue.close()
+    return replace(result, execution=replace(result.execution,
+        total_time_s=time.perf_counter() - started))

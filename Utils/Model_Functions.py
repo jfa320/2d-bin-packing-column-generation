@@ -1,6 +1,7 @@
 import cplex
-from cplex.exceptions import CplexSolverError
 import time
+from utils.execution_result import ExecutionResult
+from utils.status_normalizer import map_cplex_mip_status
 
 
 def add_variables(model, var_names, obj_coeffs, var_type):
@@ -65,38 +66,51 @@ def add_constraint_set(
 
 
 def handle_solver_error(e, queue, solver_time):
-    error_code = e.args[2]
-    model_status, solver_status = ("14", "4") if error_code == 1217 else ("12", "10")
+    # Retain the dictionary envelope used by reference models and CG callers.
     queue.put({
-        "modelStatus": model_status,
-        "solverStatus": solver_status,
-        "objectiveValue": 0,
-        "solverTime": solver_time
+        "modelStatus": "14",
+        "solverStatus": "10",
+        "objectiveValue": None,
+        "solverTime": solver_time,
+        "error_message": str(e),
     })
 
 
-def run_model(create_model, solve_model, queue, manual_interruption, max_time):
-    # Default values for PAVER.
-    model_status, solver_status, objective_value, solver_time = "1", "1", 0, 1
-    start = time.time()
+def solve_mip_model(model, case_name, model_name):
+    model.solve()
+    raw_status = model.solution.get_status()
+    status = map_cplex_mip_status(raw_status, model.solution.is_primal_feasible())
+    objective = float(model.solution.get_objective_value()) if status.has_feasible_solution else None
+    return ExecutionResult(
+        case_name, model_name, status.model_status, status.termination_status,
+        objective, 0.0, raw_cplex_status=raw_status,
+        error_message=(f"CPLEX status {raw_status} normalized to Error."
+                       if status.termination_status == "Error" else None),
+    )
 
+
+def run_model(create_model, solve_model, queue, max_time, case_name, model_name):
+    start = time.perf_counter()
+    model = None
+    result = ExecutionResult(case_name, model_name, None, "Error", None, 0.0)
     try:
         model = create_model(max_time)
-        model_status, solver_status, objective_value = solve_model(model, queue, manual_interruption)
-        solver_time = round(time.time() - start, 2)
-
-    except CplexSolverError as e:
-        solver_time = round(time.time() - start, 2)
-        handle_solver_error(e, queue, solver_time)
-        return
-
-    except Exception as e:
-        solver_time = round(time.time() - start, 2)
-        print(f"Unexpected error during model creation/solve: {e}")
-
-    queue.put({
-        "modelStatus": model_status,
-        "solverStatus": solver_status,
-        "objectiveValue": objective_value,
-        "solverTime": solver_time
-    })
+        remaining = max_time - (time.perf_counter() - start)
+        if remaining <= 0:
+            result = ExecutionResult(case_name, model_name, 9, "TimeLimit", None, 0.0)
+        else:
+            model.parameters.timelimit.set(remaining)
+            result = solve_model(model)
+    except Exception as exc:
+        result = ExecutionResult(case_name, model_name, None, "Error", None, 0.0, error_message=str(exc))
+    finally:
+        if model is not None:
+            try:
+                model.end()
+            except Exception as exc:
+                result.termination_status = "Error"
+                result.error_message = "; ".join(filter(None, [
+                    result.error_message, f"Model cleanup failed: {exc}",
+                ]))
+    result.total_time_s = time.perf_counter() - start
+    queue.put(result)

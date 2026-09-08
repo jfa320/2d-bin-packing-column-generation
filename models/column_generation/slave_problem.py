@@ -4,6 +4,7 @@ from utils.model_functions import *
 from config import *
 from objects import Slice
 from objects import Item
+from utils.status_normalizer import map_cplex_mip_status
 
 MODEL_NAME = "Model5SlaveAlternative"
 DISABLE_DUPLICATE_CONSTRAINT_CHECK = True  # Set True to disable duplicate constraint checks
@@ -254,7 +255,7 @@ def create_slave_model(max_time, xy_x, xy_y, dual_values, width_bin, height_item
         raise
 
 
-def solve_slave_model(model, queue, manual_interruption, bin_width, item_height, item_width, slice_height):
+def solve_slave_model(model, queue, manual_interruption, bin_width, item_height, item_width, slice_height, finalization_heuristics=None):
     print("IN - Solve Slave Model")
 
     eps_second_phase = 1e-8
@@ -341,8 +342,15 @@ def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
     # =========================================================
     model.solve()
 
-    status_string = model.solution.get_status_string()
-    if "optimal" not in status_string.lower() and "feasible" not in status_string.lower():
+    def report_status():
+        raw_status = model.solution.get_status()
+        feasible = model.solution.is_primal_feasible()
+        state = map_cplex_mip_status(raw_status, has_feasible_solution=feasible)
+        queue.put({"phase": "pricing", "raw_status": raw_status,
+                   "state": state})
+        return state.has_feasible_solution
+
+    if not report_status():
         print("No feasible slave solution found")
         print("OUT - Solve Slave Model")
         return None, None, []
@@ -363,7 +371,7 @@ def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
 
     print_summary("Phase 1 summary", phase_1_objective_value, phase_1_items)
 
-    if not USE_PRACTICAL_CG_ENHANCEMENTS:
+    if not (USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics):
         print("Practical CG enhancements disabled. Keeping phase 1 solution.")
         print("OUT - Solve Slave Model")
         return phase_1_slice, phase_1_objective_value, phase_1_active_variables
@@ -395,8 +403,7 @@ def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
 
         model.solve()
 
-        phase_2_status_string = model.solution.get_status_string()
-        if "optimal" in phase_2_status_string.lower() or "feasible" in phase_2_status_string.lower():
+        if report_status():
             phase_2_slice, phase_2_items, phase_2_active_variables, phase_2_raw_solution = extract_current_solution(model)
 
             if phase_2_slice is not None:
@@ -426,6 +433,7 @@ def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
             print("Phase 2 has no feasible solution. Keeping phase 1.")
 
     except Exception as e:
+        queue.put({"phase": "pricing", "error": str(e)})
         print(f"Phase 2 failed: {e}. Keeping phase 1.")
 
     print("OUT - Solve Slave Model")

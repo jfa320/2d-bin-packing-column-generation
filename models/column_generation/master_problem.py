@@ -2,6 +2,7 @@ import cplex
 from cplex.exceptions import CplexSolverError
 from utils.model_functions import *
 from config import *
+from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
 import time
 
 MODEL_NAME = "Model5Master"
@@ -100,12 +101,9 @@ def create_master_model(max_time, slices, height_bin, width_bin, height_item, wi
 
 def solve_master_model(model, queue, manual_interruption, relax_model, initial_time):
     print("IN - Solve Master Model")
-    # Default values sent to PAVER
-    model_status, solver_status, objective_value, solver_time = "1", "1", 0, 1
+    objective_value = None
     
     try:    
-            # Disable manual interruption here
-        manual_interruption.value = False
         
         
         if(relax_model):
@@ -117,8 +115,17 @@ def solve_master_model(model, queue, manual_interruption, relax_model, initial_t
         
         # Solve the model
         model.solve()
+        raw_status = model.solution.get_status()
+        feasible = model.solution.is_primal_feasible()
+        state = (map_cplex_lp_status if relax_model else map_cplex_mip_status)(
+            raw_status, has_feasible_solution=feasible)
+        feasible = state.has_feasible_solution
+        objective_value = model.solution.get_objective_value() if feasible else None
+        queue.put({"phase": "lp" if relax_model else "ip", "state": state,
+                   "raw_status": raw_status, "objective": objective_value})
+        if not feasible:
+            return None, None, []
             
-        objective_value = model.solution.get_objective_value()
         if not relax_model:
             rounded_objective_value = round(objective_value)
             if abs(objective_value - rounded_objective_value) <= 1e-6:
@@ -127,7 +134,7 @@ def solve_master_model(model, queue, manual_interruption, relax_model, initial_t
         print("Optimal value:", objective_value)
         dual_values = None
         active_variables = []
-        if(relax_model):
+        if relax_model and state.model_status == 1 and state.termination_status == "Normal":
             # Get dual values
             dual_values = get_dual_values(model)
             # print("Dual values:", dualValues)    
@@ -139,32 +146,13 @@ def solve_master_model(model, queue, manual_interruption, relax_model, initial_t
             if value_variable > 0.5:
                 active_variables.append(var_name)
 
-        status = model.solution.get_status()
-        
-        
-        
-        if status == 105:  # CPLEX code 105 = Time limit exceeded
-            print("The solver stopped because it reached the time limit.")
-            model_status = "2" # PAVER value for a local optimum
-
-        if(not relax_model):
-            final_time = time.time()
-            solver_time = final_time - initial_time
-            solver_time = round(solver_time, 2)
-            # Send results through the queue only for the final non-relaxed solve
-            queue.put({
-                "modelStatus": model_status,
-                "solverStatus": solver_status,
-                "objectiveValue": objective_value,
-                "solverTime": solver_time
-            })
         # Get the constraint count
         
         print("OUT - Solve Master Model")
         return objective_value, dual_values, active_variables
     
     except CplexSolverError as e:
-        handle_solver_error(e, queue, solver_time)
+        raise
         
 def get_dual_values(model):
     print("Extracting dual values...")

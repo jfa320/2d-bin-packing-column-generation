@@ -1,13 +1,12 @@
 import cplex
-from cplex.exceptions import CplexSolverError
-import multiprocessing
 import time
 from utils.model_functions import *
+from utils.execution_runner import execute_in_process
 from config import *
 
 # Based on the simplified model 1 formulation (base model - Pisinger & Sigurd); see Overleaf section 2.8 for the complete model
 # Simple case improved by rotation
-MODEL_NAME = "Model1"
+MODEL_NAME = "Model1NoRotation"
 
 
 def apply_instance(instance):
@@ -19,9 +18,9 @@ def apply_instance(instance):
     ITEM_HEIGHT = instance["item_height"]
 
 
-def run_model_for_instance(instance, create_model_fn, solve_model_fn, queue, manual_interruption, max_time):
+def run_model_for_instance(queue, max_time, instance):
     apply_instance(instance)
-    run_model(create_model_fn, solve_model_fn, queue, manual_interruption, max_time)
+    run_model(create_model, solve_model, queue, max_time, CASE_NAME, MODEL_NAME)
 
 
 def calculate_physical_item_bound():
@@ -109,76 +108,12 @@ def create_model(max_time):
     return model
 
 
-def solve_model(model, queue, manual_interruption):
-    # Disable manual interruption here
-    manual_interruption.value = False
-
-    # Solve the model
-    model.solve()
-
-    # Get and print results
-    objective_value = model.solution.get_objective_value()
-    print("-------------------------------------------")
-    print("Model 1 - No Rotation")
-    print(f"Optimal value: {objective_value}")
-
-    model_status, solver_status = "1", "1"
-    status = model.solution.get_status()
-    if status == 105:
-        print("The solver stopped because it reached the time limit.")
-        model_status = "2"
-
-    return model_status, solver_status, objective_value
+def solve_model(model):
+    return solve_mip_model(model, CASE_NAME, MODEL_NAME)
 
 
-def execute_with_time_limit(max_time, instance=None):
-    global model_status, solver_status, objective_value, solver_time
-    global exceding_limit_time
-    exceding_limit_time = False
-
-    # Create a queue to receive subprocess results
-    queue = multiprocessing.Queue()
-
-    # Create a shared variable to handle manual interruption
-    manual_interruption = multiprocessing.Value('b', True)
-
+def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
+    start = time.perf_counter()
     if instance is None:
         instance = get_instance(CASE_NAME)
-
-    # Create the subprocess that runs the function
-    process = multiprocessing.Process(target=run_model_for_instance, args=(instance, create_model, solve_model, queue, manual_interruption, max_time))
-
-    # Start the subprocess
-    process.start()
-
-    initial_time = time.time()
-
-    # Monitor the queue while the process is running
-    while process.is_alive():
-        if manual_interruption.value and time.time() - initial_time > max_time:
-            print("Limit time reached. Aborting process.")
-            model_status = "14"  # PAVER value for a model that returned no answer because of an error
-            solver_status = "4"  # The solver finished model execution
-            solver_time = max_time
-            exceding_limit_time = True
-            process.terminate()
-            process.join()
-            break
-        time.sleep(0.1)  # Avoid consuming too many resources
-
-    # Print execution results that are later stored in the PAVER trace file
-    while not queue.empty():
-        message = queue.get()
-        if isinstance(message, dict):
-            print(message)
-            model_status = message["modelStatus"]
-            solver_status = message["solverStatus"]
-            objective_value = message["objectiveValue"]
-            solver_time = message["solverTime"]
-
-    if exceding_limit_time:
-        print("The model exceeded the execution time limit.")
-        objective_value = "n/a"
-        model_status = "14"
-
-    return instance["case_name"], MODEL_NAME, model_status, solver_status, objective_value, solver_time
+    return execute_in_process(run_model_for_instance, max_time, instance, MODEL_NAME, start)
