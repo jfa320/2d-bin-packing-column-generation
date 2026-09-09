@@ -135,6 +135,31 @@ caso4,Model5Orchestrator,...
 caso4,BacktrackingMonoitemExacto,...
 ```
 
+## Benchmark experimental
+
+La ejecución del benchmark de generación de columnas está documentada en
+[`docs/benchmark_paver.md`](docs/benchmark_paver.md).
+
+Desde la raíz del repositorio, ejecutar:
+
+```powershell
+python benchmark_runner.py --input "benchmark.csv" --output "Results\benchmark.csv" --trace "Results\benchmark.trc" --time 300
+```
+
+El runner procesa todas las filas que existan en el CSV de entrada. Por lo
+tanto, si el archivo contiene 77 instancias, ejecuta 77 instancias. El
+parámetro `--time` define el límite en segundos para cada instancia.
+
+`--expected-count` es opcional y solo permite verificar una cantidad esperada:
+
+```powershell
+python benchmark_runner.py --input "benchmark.csv" --expected-count 77 --time 300
+```
+
+El CSV experimental se escribe en `Results\benchmark.csv` y la traza
+compatible con PAVER en `Results\benchmark.trc`. Se recomienda usar nombres
+de salida nuevos para cada corrida.
+
 ## Ejecución de pruebas
 
 ```bash

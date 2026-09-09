@@ -82,7 +82,7 @@ rechazan.
 Benchmark:
 
 ```text
-python benchmark_runner.py --input "benchmark_validation_baseline(1).csv" --output Results/benchmark.csv --trace Results/benchmark.trc --time 1200
+python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output Results/benchmark.csv --trace Results/benchmark.trc --time 1200
 ```
 
 El runner ejecuta todas las filas que existan en el CSV, ejecuta solamente CG
