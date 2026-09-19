@@ -5,9 +5,11 @@ from functools import lru_cache
 from config import *
 from utils.execution_result import ExecutionResult
 from utils.execution_runner import execute_in_process
+from utils.paver_constants import PaverConstants
 
 
 MODEL_NAME = "BacktrackingMonoitemExacto"
+PAVER = PaverConstants
 
 
 def _validate_dimensions(bin_width, bin_height, item_width, item_height):
@@ -199,16 +201,18 @@ def _solve_in_process(queue, max_time, instance):
             )
 
         queue.put(ExecutionResult(
-            instance["case_name"], MODEL_NAME, 1, "Normal", float(result["capacity"]), solver_time,
+            instance["case_name"], MODEL_NAME, PAVER.MODEL_STATUS_OPTIMAL,
+            PAVER.TERMINATION_NORMAL, float(result["capacity"]), solver_time,
         ))
     except TimeoutError:
         queue.put(ExecutionResult(
-            instance["case_name"], MODEL_NAME, 9, "TimeLimit", None, time.perf_counter() - start_time,
+            instance["case_name"], MODEL_NAME, PAVER.MODEL_STATUS_NO_SOLUTION,
+            PAVER.TERMINATION_TIME_LIMIT, None, time.perf_counter() - start_time,
         ))
     except Exception as exc:
         print(f"Exact monoitem backtracking error: {exc}")
         queue.put(ExecutionResult(
-            instance["case_name"], MODEL_NAME, None, "Error", None,
+            instance["case_name"], MODEL_NAME, None, PAVER.TERMINATION_ERROR, None,
             time.perf_counter() - start_time, error_message=str(exc),
         ))
 

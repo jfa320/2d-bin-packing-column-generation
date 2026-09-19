@@ -3,6 +3,11 @@
 from dataclasses import dataclass
 from typing import Optional
 
+from utils.paver_constants import PaverConstants
+
+
+PAVER = PaverConstants
+
 
 @dataclass(frozen=True)
 class NormalizedSolverStatus:
@@ -13,48 +18,48 @@ class NormalizedSolverStatus:
 
 # Entries are (model status, termination reason, implied primal feasibility).
 _MIP = {
-    101: (1, "Normal", True),
-    102: (8, "Normal", True),
-    103: (10, "Normal", False),
-    104: (8, "OtherLimit", True),
-    105: (8, "NodeLimit", True),
-    106: (9, "NodeLimit", False),
-    107: (8, "TimeLimit", True),
-    108: (9, "TimeLimit", False),
-    109: (8, "Error", True),
-    110: (13, "Error", False),
-    111: (8, "OtherLimit", True),
-    112: (9, "OtherLimit", False),
-    113: (8, "Other", True),
-    114: (9, "Other", False),
-    115: (6, "Normal", False),
-    116: (8, "Error", True),
-    117: (13, "Error", False),
-    118: (18, "Normal", False),
-    119: (12, "Normal", False),
-    127: (8, "Other", True),
-    131: (8, "TimeLimit", True),
-    132: (9, "TimeLimit", False),
-    133: (13, "Other", False),
+    101: (PAVER.MODEL_STATUS_OPTIMAL, PAVER.TERMINATION_NORMAL, True),
+    102: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_NORMAL, True),
+    103: (PAVER.MODEL_STATUS_NO_SOLUTION_RETURNED, PAVER.TERMINATION_NORMAL, False),
+    104: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_OTHER_LIMIT, True),
+    105: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_NODE_LIMIT, True),
+    106: (PAVER.MODEL_STATUS_NO_SOLUTION, PAVER.TERMINATION_NODE_LIMIT, False),
+    107: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_TIME_LIMIT, True),
+    108: (PAVER.MODEL_STATUS_NO_SOLUTION, PAVER.TERMINATION_TIME_LIMIT, False),
+    109: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_ERROR, True),
+    110: (PAVER.MODEL_STATUS_ERROR, PAVER.TERMINATION_ERROR, False),
+    111: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_OTHER_LIMIT, True),
+    112: (PAVER.MODEL_STATUS_NO_SOLUTION, PAVER.TERMINATION_OTHER_LIMIT, False),
+    113: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_OTHER, True),
+    114: (PAVER.MODEL_STATUS_NO_SOLUTION, PAVER.TERMINATION_OTHER, False),
+    115: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_NORMAL, False),
+    116: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_ERROR, True),
+    117: (PAVER.MODEL_STATUS_ERROR, PAVER.TERMINATION_ERROR, False),
+    118: (PAVER.MODEL_STATUS_LOCALLY_OPTIMAL, PAVER.TERMINATION_NORMAL, False),
+    119: (PAVER.MODEL_STATUS_SOLUTION_UNBOUNDED, PAVER.TERMINATION_NORMAL, False),
+    127: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_OTHER, True),
+    131: (PAVER.MODEL_STATUS_FEASIBLE, PAVER.TERMINATION_TIME_LIMIT, True),
+    132: (PAVER.MODEL_STATUS_NO_SOLUTION, PAVER.TERMINATION_TIME_LIMIT, False),
+    133: (PAVER.MODEL_STATUS_ERROR, PAVER.TERMINATION_OTHER, False),
 }
 
 _LP = {
-    1: (1, "Normal", True),
-    2: (18, "Normal", False),
-    3: (4, "Normal", False),
-    4: (12, "Normal", False),
-    5: (6, "Normal", False),
-    6: (6, "Other", False),
-    10: (6, "IterationLimit", False),
-    11: (6, "TimeLimit", False),
-    12: (6, "OtherLimit", False),
-    13: (6, "UserInterrupt", False),
+    1: (PAVER.MODEL_STATUS_OPTIMAL, PAVER.TERMINATION_NORMAL, True),
+    2: (PAVER.MODEL_STATUS_LOCALLY_OPTIMAL, PAVER.TERMINATION_NORMAL, False),
+    3: (PAVER.MODEL_STATUS_INFEASIBLE, PAVER.TERMINATION_NORMAL, False),
+    4: (PAVER.MODEL_STATUS_SOLUTION_UNBOUNDED, PAVER.TERMINATION_NORMAL, False),
+    5: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_NORMAL, False),
+    6: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_OTHER, False),
+    10: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_ITERATION_LIMIT, False),
+    11: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_TIME_LIMIT, False),
+    12: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_OTHER_LIMIT, False),
+    13: (PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE, PAVER.TERMINATION_USER_INTERRUPT, False),
 }
 
 
 def _normalize(raw_status, has_feasible_solution, user_interrupted, table, feasible_status):
     if raw_status not in table:
-        return NormalizedSolverStatus(13, "Error", False)
+        return NormalizedSolverStatus(PAVER.MODEL_STATUS_ERROR, PAVER.TERMINATION_ERROR, False)
     model_status, termination, implied_feasible = table[raw_status]
     # Invalid optimal points and proofs without a primal point never authorize
     # objective extraction, even if CPLEX reports a numerically feasible point.
@@ -64,13 +69,18 @@ def _normalize(raw_status, has_feasible_solution, user_interrupted, table, feasi
     )
     if not invalid_primal:
         if feasible:
-            model_status = model_status if model_status == 1 else feasible_status
+            model_status = (model_status
+                            if model_status == PAVER.MODEL_STATUS_OPTIMAL
+                            else feasible_status)
         else:
-            if implied_feasible and termination == "Normal":
-                termination = "Error"
-            model_status = 13 if termination == "Error" else (9 if table is _MIP else 6)
+            if implied_feasible and termination == PAVER.TERMINATION_NORMAL:
+                termination = PAVER.TERMINATION_ERROR
+            model_status = (PAVER.MODEL_STATUS_ERROR
+                            if termination == PAVER.TERMINATION_ERROR
+                            else (PAVER.MODEL_STATUS_NO_SOLUTION
+                                  if table is _MIP else PAVER.MODEL_STATUS_INTERMEDIATE_INFEASIBLE))
     if user_interrupted and table is _MIP and raw_status in {113, 114}:
-        termination = "UserInterrupt"
+        termination = PAVER.TERMINATION_USER_INTERRUPT
     return NormalizedSolverStatus(model_status, termination, feasible)
 
 
@@ -79,7 +89,10 @@ def map_cplex_mip_status(
     has_feasible_solution: Optional[bool] = None,
     user_interrupted: bool = False,
 ) -> NormalizedSolverStatus:
-    return _normalize(raw_status, has_feasible_solution, user_interrupted, _MIP, 8)
+    return _normalize(
+        raw_status, has_feasible_solution, user_interrupted,
+        _MIP, PAVER.MODEL_STATUS_FEASIBLE,
+    )
 
 
 def map_cplex_lp_status(
@@ -87,4 +100,7 @@ def map_cplex_lp_status(
     has_feasible_solution: Optional[bool] = None,
     user_interrupted: bool = False,
 ) -> NormalizedSolverStatus:
-    return _normalize(raw_status, has_feasible_solution, user_interrupted, _LP, 7)
+    return _normalize(
+        raw_status, has_feasible_solution, user_interrupted,
+        _LP, PAVER.MODEL_STATUS_LP_FEASIBLE,
+    )

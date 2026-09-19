@@ -5,6 +5,7 @@ import time
 from queue import Empty
 from dataclasses import replace
 from utils.execution_result import ExecutionResult, ColumnGenerationMetrics, ColumnGenerationExecutionResult
+from utils.paver_constants import PaverConstants
 from objects import Slice
 from objects import Item
 
@@ -17,6 +18,7 @@ from utils.bin_visualization import export_bin_solution_to_png
 from objects.ConfigData import ConfigData
 
 MODEL_NAME = "Model5Orchestrator"
+PAVER = PaverConstants
 
 EPS = 1e-9  # Numeric tolerance
 
@@ -316,7 +318,7 @@ class _CGProgress:
         self.started = started
         self.structured = structured
         self.metrics = ColumnGenerationMetrics()
-        self.termination = "Normal"
+        self.termination = PAVER.TERMINATION_NORMAL
         self.raw_status = None
         self.last_model_status = None
         self.final_model_status = None
@@ -332,15 +334,15 @@ class _CGProgress:
         elif not self.finished:
             metrics = replace(metrics, integer_master_time_s=now - self.ip_started)
         if metrics.restricted_integer_master is not None:
-            model_status = 8
-        elif self.termination == "Error" or self.error:
-            model_status = 13
+            model_status = PAVER.MODEL_STATUS_FEASIBLE
+        elif self.termination == PAVER.TERMINATION_ERROR or self.error:
+            model_status = PAVER.MODEL_STATUS_ERROR
         elif self.final_model_status is not None:
             model_status = self.final_model_status
         elif self.last_model_status is not None:
             model_status = self.last_model_status
         else:
-            model_status = 9
+            model_status = PAVER.MODEL_STATUS_NO_SOLUTION
         return ColumnGenerationExecutionResult(
             ExecutionResult(self.case_name, MODEL_NAME, model_status,
                             self.termination, metrics.restricted_integer_master,
@@ -353,16 +355,18 @@ class _CGProgress:
     def put(self, message):
         if "error" in message:
             self.error = message["error"]
-            self.termination = "Error"
+            self.termination = PAVER.TERMINATION_ERROR
         else:
             state = message["state"]
             self.last_model_status = state.model_status
             termination = str(state.termination_status)
             # A normal final master must not hide an earlier abnormal solve.
-            if self.termination == "Normal" or termination == "Error":
+            if (self.termination == PAVER.TERMINATION_NORMAL
+                    or termination == PAVER.TERMINATION_ERROR):
                 self.termination = termination
                 self.raw_status = message["raw_status"]
-            if (message["phase"] == "lp" and state.model_status == 1
+            if (message["phase"] == "lp"
+                    and state.model_status == PAVER.MODEL_STATUS_OPTIMAL
                     and state.has_feasible_solution and message["objective"] is not None):
                 self.metrics = replace(self.metrics, lp_value=message["objective"])
             if (message["phase"] == "ip" and state.has_feasible_solution
@@ -691,7 +695,8 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
         ExecutionResult(instance.get("case_name", CASE_NAME) if instance is not None else CASE_NAME,
-                        MODEL_NAME, 9, "Error", None, 0.0,
+                        MODEL_NAME, PAVER.MODEL_STATUS_NO_SOLUTION,
+                        PAVER.TERMINATION_ERROR, None, 0.0,
                         error_message="CG child exited without a result"),
         ColumnGenerationMetrics())
     queue = None
@@ -747,16 +752,19 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
                 break
         if not timed_out and (process.exitcode or not completed):
             result = replace(result, execution=replace(result.execution,
-                termination_status="Error", error_message=f"CG child exited with code {process.exitcode}; completed={completed}"))
+                termination_status=PAVER.TERMINATION_ERROR,
+                error_message=f"CG child exited with code {process.exitcode}; completed={completed}"))
         if timed_out:
             result = replace(result, execution=replace(result.execution,
-                termination_status="TimeLimit", error_message="Wall-clock time limit reached"))
+                termination_status=PAVER.TERMINATION_TIME_LIMIT,
+                error_message="Wall-clock time limit reached"))
     except Exception as exc:
         result = replace(result, execution=replace(result.execution,
-            termination_status="Error", error_message=str(exc)))
+            termination_status=PAVER.TERMINATION_ERROR, error_message=str(exc)))
     except KeyboardInterrupt:
         result = replace(result, execution=replace(result.execution,
-            termination_status="UserInterrupt", error_message="Execution interrupted by user"))
+            termination_status=PAVER.TERMINATION_USER_INTERRUPT,
+            error_message="Execution interrupted by user"))
     finally:
         if process is not None and process.is_alive():
             process.terminate()

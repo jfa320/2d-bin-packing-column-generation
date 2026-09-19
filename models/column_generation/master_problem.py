@@ -2,11 +2,13 @@ import cplex
 from cplex.exceptions import CplexSolverError
 from utils.model_functions import *
 from config import *
+from utils.paver_constants import PaverConstants
 from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
 import time
 
 MODEL_NAME = "Model5Master"
 DISABLE_DUPLICATE_CONSTRAINT_CHECK = True
+PAVER = PaverConstants
 
 
 def calculate_occupied_positions(position, width, height):
@@ -134,7 +136,9 @@ def solve_master_model(model, queue, manual_interruption, relax_model, initial_t
         print("Optimal value:", objective_value)
         dual_values = None
         active_variables = []
-        if relax_model and state.model_status == 1 and state.termination_status == "Normal":
+        if (relax_model
+                and state.model_status == PAVER.MODEL_STATUS_OPTIMAL
+                and state.termination_status == PAVER.TERMINATION_NORMAL):
             # Get dual values
             dual_values = get_dual_values(model)
             # print("Dual values:", dualValues)    

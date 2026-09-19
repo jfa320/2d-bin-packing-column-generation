@@ -25,6 +25,10 @@ from utils.execution_result import (
     ColumnGenerationMetrics,
     ExecutionResult,
 )
+from utils.paver_constants import PaverConstants
+
+
+PAVER = PaverConstants
 
 
 DEFAULT_INPUT = "benchmark_validation_baseline(1).csv"
@@ -94,13 +98,13 @@ def result_row(instance, result):
     gap = None if incumbent is None else 100 * (reference - incumbent) / reference
     if incumbent is not None and incumbent > reference:
         status = "REFERENCE_EXCEEDED"
-    elif execution.termination_status == "TimeLimit":
+    elif execution.termination_status == PAVER.TERMINATION_TIME_LIMIT:
         status = "TIMEOUT_NO_SOLUTION" if incumbent is None else "TIMEOUT_FEASIBLE"
     elif metrics.lp_value is None:
         status = "LP_FAIL"
     elif incumbent is None:
         status = "LP_OK_IP_FAIL"
-    elif execution.termination_status != "Normal" or execution.error_message:
+    elif execution.termination_status != PAVER.TERMINATION_NORMAL or execution.error_message:
         status = "ERROR"
     else:
         status = "OPTIMAL" if incumbent == reference else "SUBOPTIMAL"
@@ -168,8 +172,10 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                     raise TypeError("CG must return ColumnGenerationExecutionResult")
             except Exception as error:
                 result = ColumnGenerationExecutionResult(
-                    ExecutionResult(instance["instance"], "Model5Orchestrator", 13,
-                                    "Error", None, time.perf_counter() - started,
+                    ExecutionResult(instance["instance"], "Model5Orchestrator",
+                                    PAVER.MODEL_STATUS_ERROR,
+                                    PAVER.TERMINATION_ERROR, None,
+                                    time.perf_counter() - started,
                                     error_message=f"{type(error).__name__}: {error}"),
                     ColumnGenerationMetrics(),
                 )

@@ -9,9 +9,11 @@ from models.comparative import Model_7_Exact_Monoitem_Backtracking
 from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
 from utils.trace_file_generator import TraceFileGenerator
 from utils.execution_result import ExecutionResult
+from utils.paver_constants import PaverConstants
 
 
 DEFAULT_EXECUTION_TIME = 1200  # Execution time in seconds for each model; can be changed through the CLI.
+PAVER = PaverConstants
 
 MODELS = [
     column_generation_solver,
@@ -62,7 +64,8 @@ def main():
                 result = model.execute_with_time_limit(args.time, instance)
             except Exception as error:
                 result = ExecutionResult(
-                    instance["case_name"], model.MODEL_NAME, 13, "Error", None,
+                    instance["case_name"], model.MODEL_NAME, PAVER.MODEL_STATUS_ERROR,
+                    PAVER.TERMINATION_ERROR, None,
                     time.perf_counter() - started, error_message=str(error),
                 )
             generator.write_trace_record(result)

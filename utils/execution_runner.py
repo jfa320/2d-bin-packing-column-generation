@@ -7,6 +7,10 @@ from threading import Thread
 from time import perf_counter
 
 from utils.execution_result import ExecutionResult
+from utils.paver_constants import PaverConstants
+
+
+PAVER = PaverConstants
 
 
 class _ResultWriter:
@@ -22,7 +26,7 @@ def _run_worker(target, writer, max_time, instance, model_name):
         target(_ResultWriter(writer), max_time, instance)
     except BaseException as exc:
         writer.send(ExecutionResult(
-            instance["case_name"], model_name, None, "Error", None, 0.0,
+            instance["case_name"], model_name, None, PAVER.TERMINATION_ERROR, None, 0.0,
             error_message=f"{type(exc).__name__}: {exc}",
         ))
     finally:
@@ -47,7 +51,9 @@ def _drain_results(reader, messages):
 
 def execute_in_process(target, max_time, instance, model_name, start_time=None):
     start = perf_counter() if start_time is None else start_time
-    result = ExecutionResult(instance["case_name"], model_name, None, "Error", None, 0.0)
+    result = ExecutionResult(
+        instance["case_name"], model_name, None, PAVER.TERMINATION_ERROR, None, 0.0
+    )
     reader = writer = process = receiver = None
     messages = Queue()
     timed_out = received = interrupted = False
@@ -91,11 +97,13 @@ def execute_in_process(target, max_time, instance, model_name, start_time=None):
                     errors.append(f"Invalid worker message: {message!r}")
     except KeyboardInterrupt:
         interrupted = True
-        result.model_status = 8 if result.objective_value is not None else 9
-        result.termination_status = "UserInterrupt"
+        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+                               if result.objective_value is not None
+                               else PAVER.MODEL_STATUS_NO_SOLUTION)
+        result.termination_status = PAVER.TERMINATION_USER_INTERRUPT
         errors.append("Execution interrupted by user.")
     except Exception as exc:
-        result.termination_status = "Error"
+        result.termination_status = PAVER.TERMINATION_ERROR
         errors.append(f"{type(exc).__name__}: {exc}")
     finally:
         if process is not None:
@@ -144,17 +152,23 @@ def execute_in_process(target, max_time, instance, model_name, start_time=None):
                 errors.append(f"Invalid worker message: {message!r}")
     if not received and not timed_out and not errors:
         errors.append("Worker exited without a result.")
-    if received and result.termination_status == "Error" and not errors:
+    if received and result.termination_status == PAVER.TERMINATION_ERROR and not errors:
         errors.append("Worker reported Error without a diagnostic.")
-    if errors and result.termination_status != "UserInterrupt":
-        result.termination_status = "Error"
-        result.model_status = 8 if result.objective_value is not None else 13
+    if errors and result.termination_status != PAVER.TERMINATION_USER_INTERRUPT:
+        result.termination_status = PAVER.TERMINATION_ERROR
+        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+                               if result.objective_value is not None
+                               else PAVER.MODEL_STATUS_ERROR)
     if timed_out:
-        result.model_status = 8 if result.objective_value is not None else 9
-        result.termination_status = "TimeLimit"
+        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+                               if result.objective_value is not None
+                               else PAVER.MODEL_STATUS_NO_SOLUTION)
+        result.termination_status = PAVER.TERMINATION_TIME_LIMIT
     if interrupted:
-        result.model_status = 8 if result.objective_value is not None else 9
-        result.termination_status = "UserInterrupt"
+        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+                               if result.objective_value is not None
+                               else PAVER.MODEL_STATUS_NO_SOLUTION)
+        result.termination_status = PAVER.TERMINATION_USER_INTERRUPT
     if errors:
         result.error_message = "; ".join(dict.fromkeys(errors))
     result.case_name = instance["case_name"]

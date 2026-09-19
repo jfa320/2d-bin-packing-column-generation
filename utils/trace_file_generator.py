@@ -4,16 +4,12 @@ import math
 from pathlib import Path
 
 from utils.execution_result import ColumnGenerationExecutionResult, ExecutionResult
+from utils.paver_constants import PaverConstants
 
 
-TERMINATION_STATUSES = frozenset({
-    "Normal", "TimeLimit", "NodeLimit", "IterationLimit", "OtherLimit",
-    "UserInterrupt", "CapabilityProblem", "Error", "Other",
-})
-TRACE_COLUMNS = (
-    "InputFileName", "SolverName", "Direction", "ModelStatus",
-    "TerminationStatus", "ObjectiveValue", "SolverTime", "NumberOfIterations",
-)
+PAVER = PaverConstants
+TERMINATION_STATUSES = PAVER.TERMINATION_STATUSES
+TRACE_COLUMNS = PAVER.TRACE_COLUMNS
 TRACE_HEADER = "* Trace Record Definition\n* " + ",".join(TRACE_COLUMNS) + "\n"
 
 
@@ -38,8 +34,10 @@ class TraceFileGenerator:
 
     @staticmethod
     def _validate(result, direction, iterations):
-        if type(direction) is not int or direction != 1:
-            raise ValueError("Packing traces require Direction=1 (maximization)")
+        if type(direction) is not int or direction != PAVER.DIRECTION_MAXIMIZATION:
+            raise ValueError(
+                f"Packing traces require Direction={PAVER.DIRECTION_MAXIMIZATION} (maximization)"
+            )
         for name in (result.case_name, result.model_name):
             # PAVER splits lines at commas; CSV quoting is not supported.
             if (not isinstance(name, str) or not name or name != name.strip()
@@ -50,8 +48,12 @@ class TraceFileGenerator:
         if result.termination_status not in TERMINATION_STATUSES:
             raise ValueError(f"Invalid PAVER TerminationStatus: {result.termination_status!r}")
         if result.model_status is not None and (
-                type(result.model_status) is not int or not 1 <= result.model_status <= 19):
-            raise ValueError("ModelStatus must be an integer in 1..19 or None")
+                type(result.model_status) is not int
+                or not PAVER.MODEL_STATUS_MIN <= result.model_status <= PAVER.MODEL_STATUS_MAX):
+            raise ValueError(
+                f"ModelStatus must be an integer in {PAVER.MODEL_STATUS_MIN}.."
+                f"{PAVER.MODEL_STATUS_MAX} or None"
+            )
         for name, value in (("SolverTime", result.total_time_s),
                             ("ObjectiveValue", result.objective_value)):
             if value is None and name == "ObjectiveValue":
@@ -84,7 +86,7 @@ class TraceFileGenerator:
                 keys.add(key)
         return keys
 
-    def write_trace_record(self, result, *, direction=1):
+    def write_trace_record(self, result, *, direction=PAVER.DIRECTION_MAXIMIZATION):
         iterations = None
         if isinstance(result, ColumnGenerationExecutionResult):
             iterations = result.metrics.cg_iterations
