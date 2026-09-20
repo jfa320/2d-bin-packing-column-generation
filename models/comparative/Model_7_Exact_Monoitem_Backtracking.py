@@ -4,7 +4,7 @@ from functools import lru_cache
 
 from config import *
 from utils.execution_result import ExecutionResult
-from utils.execution_runner import execute_in_process
+from utils.execution_runner import TimedModelExecutor
 from utils.paver_constants import PaverConstants
 
 
@@ -217,12 +217,13 @@ def _solve_in_process(queue, max_time, instance):
         ))
 
 
-def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
-    start = time.perf_counter()
-    if instance is None:
-        instance = get_instance(CASE_NAME)
+_EXECUTOR = TimedModelExecutor(
+    _solve_in_process, MODEL_NAME, get_instance, lambda: CASE_NAME
+)
 
-    return execute_in_process(_solve_in_process, max_time, instance, MODEL_NAME, start)
+
+def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
+    return _EXECUTOR.execute_with_time_limit(max_time, instance)
 
 
 if __name__ == "__main__":

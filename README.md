@@ -126,6 +126,17 @@ La salida se guarda por defecto en `Results/output.trc`. Se puede cambiar el nom
 python main.py --case case7 --output output_case7.trc
 ```
 
+La ejecución normal genera el informe HTML de PAVER al finalizar:
+
+```powershell
+python main.py --all --time 1200 --output comparison.trc
+```
+
+Para omitir PAVER se usa `--no-paver`. La ruta de instalación se configura en
+[`paver.properties`](paver.properties) mediante la propiedad `paver.path`. Para
+una ejecución puntual puede reemplazarse con `--paver-path`; si PAVER no está
+disponible, se informa el error y se conserva la traza `.trc`.
+
 La estructura esperada para PAVER es una fila por combinación de instancia y modelo, por ejemplo:
 
 ```text

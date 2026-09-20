@@ -13,6 +13,30 @@ from utils.paver_constants import PaverConstants
 PAVER = PaverConstants
 
 
+class TimedModelExecutor:
+    def __init__(self, target, model_name, instance_factory=None, default_case_name=None):
+        self.target = target
+        self.model_name = model_name
+        self.instance_factory = instance_factory
+        self.default_case_name = default_case_name
+
+    def execute_with_time_limit(self, max_time, instance=None):
+        start = perf_counter()
+        if instance is None:
+            instance = self._default_instance()
+        return execute_in_process(self.target, max_time, instance, self.model_name, start)
+
+    def _default_instance(self):
+        if self.instance_factory is None:
+            raise ValueError("instance is required when no instance factory is configured.")
+        case_name = (self.default_case_name()
+                     if callable(self.default_case_name)
+                     else self.default_case_name)
+        if case_name is None:
+            raise ValueError("default case name is required when instance is omitted.")
+        return self.instance_factory(case_name)
+
+
 class _ResultWriter:
     def __init__(self, connection):
         self.connection = connection

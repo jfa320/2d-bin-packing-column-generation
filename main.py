@@ -10,6 +10,7 @@ from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
 from utils.trace_file_generator import TraceFileGenerator
 from utils.execution_result import ExecutionResult
 from utils.paver_constants import PaverConstants
+from utils.paver_runner import run_paver
 
 
 DEFAULT_EXECUTION_TIME = 1200  # Execution time in seconds for each model; can be changed through the CLI.
@@ -24,7 +25,7 @@ MODELS = [
 ]
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Run models on one or more instances.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--case", default=DEFAULT_CASE_NAME, help="Instance to run.")
@@ -33,7 +34,26 @@ def parse_args():
     parser.add_argument("--time", type=int, default=DEFAULT_EXECUTION_TIME, help="Time limit per model in seconds.")
     parser.add_argument("--output", default="output.trc", help="Name of the .trc file inside Results.")
     parser.add_argument("--append", action="store_true", help="Append only new instance/model pairs to a compatible trace.")
-    args = parser.parse_args()
+    paver_group = parser.add_mutually_exclusive_group()
+    paver_group.add_argument(
+        "--paver", dest="run_paver", action="store_true",
+        help="Run PAVER after the trace is generated (default).",
+    )
+    paver_group.add_argument(
+        "--no-paver", dest="run_paver", action="store_false",
+        help="Only generate the trace; do not run PAVER.",
+    )
+    parser.set_defaults(run_paver=True)
+    parser.add_argument(
+        "--paver-path", default=None,
+        help=("Override the PAVER root directory configured in "
+              f"{PAVER.PAVER_PROPERTIES_FILENAME}."),
+    )
+    parser.add_argument(
+        "--paver-output", default=None,
+        help="Directory for the PAVER HTML report (defaults to Results/<trace>_paver).",
+    )
+    args = parser.parse_args(argv)
     if args.time <= 0:
         parser.error("--time must be positive")
     return args
@@ -47,8 +67,8 @@ def selected_case_names(args):
     return [args.case]
 
 
-def main():
-    args = parse_args()
+def main(argv=None):
+    args = parse_args(argv)
     cases = selected_case_names(args)
     if len(cases) != len(set(cases)):
         raise ValueError("Duplicate case identifiers are not allowed")
@@ -69,6 +89,20 @@ def main():
                     time.perf_counter() - started, error_message=str(error),
                 )
             generator.write_trace_record(result)
+
+    if args.run_paver:
+        paver_result = run_paver(
+            generator.path,
+            args.paver_path,
+            args.paver_output,
+            failtime=args.time,
+        )
+        if paver_result.success:
+            print(paver_result.message)
+        else:
+            # PAVER is an optional post-processing step. Its failure must not
+            # erase or invalidate the trace produced by the model executions.
+            print(f"ERROR: {paver_result.message}")
 
 
 if __name__ == '__main__':

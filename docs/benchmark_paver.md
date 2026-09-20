@@ -79,6 +79,33 @@ El archivo se genera bajo `Results/`. Para agregar explícitamente a una
 traza compatible se puede usar `--append`; las combinaciones duplicadas se
 rechazan.
 
+La ejecución normal genera la traza y ejecuta PAVER después:
+
+```text
+python main.py --all --time 1200 --output comparison.trc
+```
+
+Para generar solamente el `.trc`, sin ejecutar PAVER, se puede usar
+`--no-paver`:
+
+```text
+python main.py --all --time 1200 --output comparison.trc --no-paver
+```
+
+La ruta de instalación de PAVER se lee desde `paver.properties`, mediante la
+propiedad `paver.path`. Puede reemplazarse para una ejecución puntual con:
+
+```text
+python main.py --all --time 1200 --paver-path "D:\Paver" --paver-output "Results\comparison_paver"
+```
+
+La invocación usa `py -3.6`, `--ignoredualbounds`, `--mintime 0.001` y un
+`--failtime` igual al `--time` de la corrida. Se ignoran las cotas duales
+porque la comparativa incluye modelos con espacios de solución diferentes,
+como los modelos con y sin rotación. Si PAVER no existe, no puede ejecutarse
+o termina con error, el programa informa el problema y conserva la traza
+generada.
+
 Benchmark:
 
 ```text

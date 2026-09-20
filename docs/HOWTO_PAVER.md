@@ -66,6 +66,11 @@ La copia de PAVER utilizada en la tesina se encuentra en:
 I:\Mi unidad\Tesina\Paver
 ```
 
+El programa obtiene esta ubicación desde el archivo `paver.properties` de la
+raíz del repositorio, usando la propiedad `paver.path`. El argumento
+`--paver-path` queda disponible únicamente como reemplazo para una ejecución
+puntual.
+
 La estructura relevante es:
 
 ``` text

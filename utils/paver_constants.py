@@ -4,6 +4,16 @@
 class PaverConstants:
     """PAVER values shared by result producers and trace serialization."""
 
+    PAVER_PROPERTIES_FILENAME = "paver.properties"
+    PAVER_PATH_PROPERTY = "paver.path"
+    PAVER_SCRIPT_RELATIVE_PATH = ("src", "paver", "paver.py")
+    PAVER_PYTHON_COMMAND = ("py", "-3.6")
+    DEFAULT_PAVER_MIN_TIME = 0.001
+    # Comparative runs include models with different feasible spaces (for
+    # example, with and without rotation), so their dual bounds cannot be
+    # checked against one another by PAVER.
+    PAVER_IGNORE_DUAL_BOUNDS = True
+
     # Trace direction. The packing problem maximizes the objective.
     DIRECTION_MAXIMIZATION = 1
 

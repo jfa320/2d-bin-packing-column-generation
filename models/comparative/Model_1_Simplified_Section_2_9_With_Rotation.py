@@ -1,7 +1,6 @@
 import cplex
-import time
 from utils.model_functions import *
-from utils.execution_runner import execute_in_process
+from utils.execution_runner import TimedModelExecutor
 from config import *
 
 MODEL_NAME = "Model1Rotation"
@@ -109,8 +108,10 @@ def solve_model(model):
     return solve_mip_model(model, CASE_NAME, MODEL_NAME)
 
 
+_EXECUTOR = TimedModelExecutor(
+    run_model_for_instance, MODEL_NAME, get_instance, lambda: CASE_NAME
+)
+
+
 def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
-    start = time.perf_counter()
-    if instance is None:
-        instance = get_instance(CASE_NAME)
-    return execute_in_process(run_model_for_instance, max_time, instance, MODEL_NAME, start)
+    return _EXECUTOR.execute_with_time_limit(max_time, instance)

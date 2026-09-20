@@ -10,7 +10,7 @@ from utils.execution_result import (
     ColumnGenerationMetrics,
     ExecutionResult,
 )
-from utils.execution_runner import execute_in_process
+from utils.execution_runner import TimedModelExecutor, execute_in_process
 from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
 
 
@@ -162,6 +162,31 @@ def _worker_large_message(queue, max_time, instance):
 
 def _worker_no_result(queue, max_time, instance):
     pass
+
+
+def test_timed_model_executor_delegates_to_shared_runner(monkeypatch):
+    from utils import execution_runner
+
+    factory = Mock(return_value={"case_name": "resolved"})
+    default_case_name = Mock(return_value="case-x")
+    delegated = Mock(return_value=ExecutionResult(
+        "resolved", "parent", 1, "Normal", 0.0, 0.0
+    ))
+    monkeypatch.setattr(execution_runner, "execute_in_process", delegated)
+
+    executor = TimedModelExecutor(
+        _worker_success, "parent", factory, default_case_name
+    )
+
+    result = executor.execute_with_time_limit(10)
+
+    factory.assert_called_once_with("case-x")
+    delegated.assert_called_once()
+    assert delegated.call_args.args[:4] == (
+        _worker_success, 10, {"case_name": "resolved"}, "parent"
+    )
+    assert delegated.call_args.args[4] is not None
+    assert result.case_name == "resolved"
 
 
 def test_runner_success_includes_setup_time():
