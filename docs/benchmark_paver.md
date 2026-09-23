@@ -118,7 +118,12 @@ y continúa si una instancia falla. `--expected-count` es opcional y solo
 verifica una cantidad esperada cuando se proporciona. El CSV se construye
 directamente desde el resultado
 estructurado, no desde el `.trc`. Incluye `error_message` como columna
-diagnóstica adicional. Una ausencia de objetivo se escribe como `NA`.
+diagnóstica adicional. Una ausencia de objetivo se escribe como `NA`. Después
+de cerrar el CSV y la traza, el mismo comando ejecuta PAVER leyendo
+`paver.path` desde `paver.properties`; el informe queda en
+`Results/benchmark_paver/index.html`. Para omitir este paso se puede agregar
+`--no-paver`. Si no se indica `--trace`, el runner crea automáticamente una
+traza junto al CSV para poder ejecutar PAVER.
 
 El gap firmado para maximización es:
 

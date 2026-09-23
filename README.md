@@ -160,6 +160,11 @@ python benchmark_runner.py --input "benchmark.csv" --output "Results\benchmark.c
 El runner procesa todas las filas que existan en el CSV de entrada. Por lo
 tanto, si el archivo contiene 77 instancias, ejecuta 77 instancias. El
 parámetro `--time` define el límite en segundos para cada instancia.
+Al finalizar, ejecuta PAVER usando la ruta configurada en `paver.properties`.
+El informe queda en `Results\benchmark_paver\index.html` cuando la traza se
+llama `Results\benchmark.trc`.
+
+Para generar solamente el CSV y la traza se puede usar `--no-paver`.
 
 `--expected-count` es opcional y solo permite verificar una cantidad esperada:
 

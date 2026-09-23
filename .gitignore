@@ -30,3 +30,6 @@ dist/
 Resultados/
 Results/
 *.trc
+
+# Graphify generated knowledge graph outputs
+graphify-out/

@@ -1,19 +1,30 @@
 import multiprocessing
-import os
-import math
 import time
 from queue import Empty
 from dataclasses import replace
 from utils.execution_result import ExecutionResult, ColumnGenerationMetrics, ColumnGenerationExecutionResult
 from utils.paver_constants import PaverConstants
 from objects import Slice
-from objects import Item
 
 from models.common.position_generator import generate_positions_xym2
-from models.column_generation.master_problem import * 
-from models.column_generation.slave_problem import * 
-from config import *
-from utils.bin_visualization import export_bin_solution_to_png
+from models.column_generation.master_problem import create_master_model, solve_master_model
+from models.column_generation.slave_problem import create_slave_model, solve_slave_model
+from models.column_generation.orchestrator_services import (
+    calculate_slice_height,
+    calculate_physical_item_bound,
+    generate_initial_slices,
+    generate_initial_slices_greedy_uniform,
+    build_slice_signature,
+    summarize_slice,
+    add_no_good_cut,
+    add_non_empty_constraint,
+    get_active_slices,
+    denormalize_slices_for_output,
+    export_final_layout,
+    SliceRegistry,
+    ProblemNormalizer,
+)
+from config import CASE_NAME, USE_PRACTICAL_CG_ENHANCEMENTS, get_instance
 
 from objects.ConfigData import ConfigData
 
@@ -31,139 +42,6 @@ MAX_EXTRA = 5
 USE_DUAL_STABILIZATION = False
 ALPHA_DUAL_STABILIZATION = 0.2
 
-
-def calculate_slice_height(bin_width, bin_height, item_width, item_height, percentage=0.05):
-    max_bound = math.floor((bin_height * bin_width) / (item_height * item_width))
-    target_items = math.ceil(max_bound * percentage)
-
-    normal_items_per_row = math.floor(bin_width / item_width)
-    normal_rows = math.ceil(target_items / normal_items_per_row)
-    normal_height = normal_rows * item_height
-
-    rotated_items_per_row = math.floor(bin_width / item_height)
-    rotated_rows = math.ceil(target_items / rotated_items_per_row)
-    rotated_height = rotated_rows * item_width
-
-    return min(normal_height, rotated_height)
-
-def calculate_physical_item_bound(bin_width, bin_height, item_width, item_height):
-    return math.floor((bin_width * bin_height) / (item_width * item_height))
-
-
-def generate_initial_slices(bin_width, bin_height,
-                                item_width, item_height,
-                                positions_xy_x, positions_xy_y,
-                                max_items):
-
-    slice_height = calculate_slice_height(bin_width, bin_height, item_width, item_height)
-
-    def generate_by_orientation(positions, w, h, rotated):
-        slices = []
-        placed_items = 0
-
-        positions_set = set(positions)
-
-        # Group positions by row (y)
-        positions_by_row = {}
-        for (x, y) in positions:
-            positions_by_row.setdefault(y, []).append(x)
-
-        for y in sorted(positions_by_row.keys()):
-            if placed_items >= max_items:
-                break
-
-            slice_ = Slice(height=slice_height, width=bin_width)
-            occupied = set()
-            x = 0
-
-            # Scan the full bin width
-            while x + w <= bin_width:
-                if placed_items >= max_items:
-                    break
-
-                # Region occupied by the item
-                region = {(x + dx, y + dy)
-                          for dx in range(w)
-                          for dy in range(h)}
-
-                # Avoid overlap inside the slice
-                if region & occupied:
-                    x += 1
-                    continue
-
-                # Validate only the start point
-                if (x, y) in positions_set:
-                    item = Item(height=h, width=w, rotated=rotated)
-                    slice_.place_item(item, x, y)
-                    occupied |= region
-                    placed_items += 1
-
-                    # Jump exactly by the item width
-                    x += w
-                else:
-                    x += 1
-
-            if slice_.get_item_start_points():
-                slices.append(slice_)
-                placed_items = 0  # Preserve the original semantics
-
-        return slices
-
-    # Generate non-rotated slices
-    non_rotated_slices = generate_by_orientation(
-        positions_xy_x, item_width, item_height, rotated=False
-    )
-
-    # Generate rotated slices
-    rotated_slices = generate_by_orientation(
-        positions_xy_y, item_height, item_width, rotated=True
-    )
-
-    return non_rotated_slices + rotated_slices
-
-
-def generate_initial_slices_greedy_uniform(bin_width, bin_height,
-                                                item_width, item_height,
-                                                max_items):
-    slice_height = calculate_slice_height(bin_width, bin_height, item_width, item_height)
-
-    def generate_by_orientation(w, h, rotated):
-        slices = []
-
-        for y in range(0, bin_height - h + 1, h):
-            slice_ = Slice(height=slice_height, width=bin_width)
-            placed_items = 0
-
-            for x in range(0, bin_width - w + 1, w):
-                if placed_items >= max_items:
-                    break
-
-                item = Item(height=h, width=w, rotated=rotated)
-                slice_.place_item(item, x, y)
-                placed_items += 1
-
-            if slice_.get_item_start_points():
-                slices.append(slice_)
-
-        return slices
-
-    non_rotated_slices = generate_by_orientation(
-        item_width, item_height, rotated=False
-    )
-
-    rotated_slices = []
-    if item_width != item_height:
-        rotated_slices = generate_by_orientation(
-            item_height, item_width, rotated=True
-        )
-
-    return non_rotated_slices + rotated_slices
-
-def build_slice_signature(slice_):
-    return tuple(sorted((item.get_position_x(), item.get_position_y(), item.get_rotated()) for item in slice_.get_items()))
-
-def summarize_slice(slice_):
-    return sorted((item.get_position_x(), item.get_position_y(), item.get_rotated()) for item in slice_.get_items())
 
 def extract_nonzero_duals(dual_prices, tol=1e-9):
     nonzero_duals = {}
@@ -209,105 +87,6 @@ def calculate_real_reduced_cost(slice_, dual_prices, w, h):
     reduced_cost_real = c_r - dual_sum
 
     return reduced_cost_real, c_r, dual_sum
-
-
-def add_no_good_cut(slave_model, active_variables, cut_id):
-    if not active_variables:
-        return
-
-    add_constraint(
-        slave_model,
-        [1.0] * len(active_variables),
-        active_variables,
-        len(active_variables) - 1,
-        "L",
-        f"nogood_{cut_id}"
-    )
-
-def add_non_empty_constraint(slave_model):
-    names = []
-    values = []
-
-    for name in slave_model.variables.get_names():
-        if name.startswith("z_x_") or name.startswith("z_y_"):
-            names.append(name)
-            values.append(1.0)
-
-    if not names:
-        return
-
-    add_constraint(
-        slave_model,
-        values,
-        names,
-        1.0,
-        "G",
-        f"non_empty_{slave_model.linear_constraints.get_num()}"
-    )
-
-
-def get_active_slices(slices, active_master_variables):
-    active_ids = set()
-
-    for variable_name in active_master_variables:
-        if not variable_name.startswith("p_"):
-            continue
-        active_ids.add(int(variable_name.split("_")[1]))
-
-    return [slice_ for slice_ in slices if slice_.get_id() in active_ids]
-
-
-def export_final_layout(case_name, bin_width, bin_height, item_width, item_height, physical_item_bound, active_slices):
-    output_path = os.path.join("Results", f"{case_name}_layout.png")
-    export_bin_solution_to_png(bin_width, bin_height, item_width, item_height, physical_item_bound, active_slices, output_path)
-    print(f"Final layout exported to: {output_path}")
-
-
-def denormalize_slices_for_output(slices, bin_width_original, bin_height_original, item_width_original, item_height_original, normalized_bin, normalized_item):
-    if not normalized_bin and not normalized_item:
-        return slices
-
-    slice_height = calculate_slice_height(bin_width_original, bin_height_original, item_width_original, item_height_original)
-    denormalized_slices = []
-
-    for slice_ in slices:
-        denormalized_items = []
-
-        for item in slice_.get_items():
-            x = item.get_position_x()
-            y = item.get_position_y()
-            width = item.get_width()
-            height = item.get_height()
-
-            if normalized_bin:
-                original_x = bin_width_original - (y + height)
-                original_y = x
-                width_original = height
-                height_original = width
-            else:
-                original_x = x
-                original_y = y
-                width_original = width
-                height_original = height
-
-            original_item = Item(
-                height=height_original,
-                width=width_original,
-                rotated=item.get_rotated() ^ normalized_bin ^ normalized_item,
-                position_x=original_x,
-                position_y=original_y
-            )
-            denormalized_items.append(original_item)
-
-        denormalized_slices.append(
-            Slice(
-                height=slice_height,
-                width=bin_width_original,
-                items=denormalized_items
-            )
-        )
-
-    return denormalized_slices
 
 
 # Main orchestrator
@@ -386,26 +165,18 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         Slice.reset_id_counter()
         iterations_without_improvement = 0
 
-        # Read dimensions from config_data
-        bin_width_original = config_data.get_bin_width()
-        bin_height_original = config_data.get_bin_height()
-        item_width_original = config_data.get_item_width()
-        item_height_original = config_data.get_item_height()
-        bin_width = bin_width_original
-        bin_height = bin_height_original
-        item_width = item_width_original
-        item_height = item_height_original
-
-        normalized_bin = bin_height > bin_width
-        normalized_item = item_height > item_width
-
-        if normalized_bin:
-            bin_width, bin_height = bin_height, bin_width
-
-        if normalized_item:
-            item_width, item_height = item_height, item_width
-
-        slice_height = calculate_slice_height(bin_width, bin_height, item_width, item_height)
+        normalized_problem = ProblemNormalizer().normalize(config_data)
+        bin_width = normalized_problem.bin_width
+        bin_height = normalized_problem.bin_height
+        item_width = normalized_problem.item_width
+        item_height = normalized_problem.item_height
+        bin_width_original = normalized_problem.original_bin_width
+        bin_height_original = normalized_problem.original_bin_height
+        item_width_original = normalized_problem.original_item_width
+        item_height_original = normalized_problem.original_item_height
+        normalized_bin = normalized_problem.normalized_bin
+        normalized_item = normalized_problem.normalized_item
+        slice_height = normalized_problem.slice_height
 
         # Generate bin positions
         positions_xy_x, positions_xy_y = generate_positions_xym2(bin_width, bin_height, item_width, item_height)
@@ -417,8 +188,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
         iteration = 0
 
-        # Build initial slice signatures to avoid regenerating them later
-        generated_signatures = {build_slice_signature(r) for r in slices}
+        registry = SliceRegistry(slices)
+        slices = registry.slices
         previous_master_objective = None
         previous_stabilized_dual_prices = None
 
@@ -450,7 +221,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             # Validate duplicates only when a new slice was generated
             if new_slice is not None:
                 signature = build_slice_signature(new_slice)
-                is_duplicate = signature in generated_signatures
+                is_duplicate = registry.contains(new_slice)
 
             # Stop if the slave did not return a feasible solution
             if objective_value_slave_model is None:
@@ -531,9 +302,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     extra_signature = build_slice_signature(new_extra_slice)
 
                     # Add the extra slice if its signature has not been generated before
-                    if extra_signature not in generated_signatures:
-                        slices.append(new_extra_slice)
-                        generated_signatures.add(extra_signature)
+                    if registry.add(new_extra_slice):
                         progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
                         progress.snapshot()
 
@@ -602,9 +371,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                         break
 
                     alternative_signature = build_slice_signature(new_alternative_slice)
-                    if alternative_signature not in generated_signatures:
-                        slices.append(new_alternative_slice)
-                        generated_signatures.add(alternative_signature)
+                    if registry.add(new_alternative_slice):
                         progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
                         progress.snapshot()
                         added_alternative = True
@@ -624,8 +391,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 break
 
             # Add the new slice and its signature
-            generated_signatures.add(signature)
-            slices.append(new_slice)
+            registry.add(new_slice)
             progress.metrics = replace(progress.metrics, generated_columns=progress.metrics.generated_columns + 1)
             progress.snapshot()
 

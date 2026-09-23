@@ -1,0 +1,80 @@
+"""Case catalog and validation independent from active runtime configuration."""
+
+DEFAULT_CASE_NAME = "case7"
+REQUIRED_INSTANCE_FIELDS = ("bin_width", "bin_height", "item_width", "item_height")
+
+DEFAULT_INSTANCES = {
+    "case1": {"bin_width": 6, "bin_height": 4, "item_width": 2, "item_height": 3, "optimum": 4},
+    "case2": {"bin_width": 5, "bin_height": 5, "item_width": 3, "item_height": 2, "optimum": 4},
+    "case3": {"bin_width": 6, "bin_height": 6, "item_width": 4, "item_height": 2, "optimum": 4},
+    "case4": {"bin_width": 7, "bin_height": 3, "item_width": 3, "item_height": 2, "optimum": 3},
+    "case5": {"bin_width": 6, "bin_height": 3, "item_width": 3, "item_height": 2, "optimum": 3},
+    "case6": {"bin_width": 120, "bin_height": 20, "item_width": 12, "item_height": 8, "optimum": 25},
+    "case7": {"bin_width": 50, "bin_height": 20, "item_width": 13, "item_height": 8, "optimum": 7},
+    "case8": {"bin_width": 40, "bin_height": 25, "item_width": 10, "item_height": 6, "optimum": 16},
+    "case9": {"bin_width": 60, "bin_height": 20, "item_width": 12, "item_height": 7, "optimum": 13},
+    "case10": {"bin_width": 45, "bin_height": 30, "item_width": 9, "item_height": 9, "optimum": 15},
+    "case11": {"bin_width": 70, "bin_height": 25, "item_width": 14, "item_height": 8, "optimum": 15},
+    "case12": {"bin_width": 55, "bin_height": 22, "item_width": 11, "item_height": 6, "optimum": 18},
+    "case13": {"bin_width": 20, "bin_height": 20, "item_width": 6, "item_height": 5, "optimum": 12},
+    "case14": {"bin_width": 40, "bin_height": 30, "item_width": 10, "item_height": 7, "optimum": 16},
+    "case15": {"bin_width": 60, "bin_height": 25, "item_width": 12, "item_height": 5, "optimum": 25},
+    "case16": {"bin_width": 48, "bin_height": 24, "item_width": 8, "item_height": 6, "optimum": 24},
+    "case17": {"bin_width": 70, "bin_height": 28, "item_width": 14, "item_height": 7, "optimum": 20},
+    "case18": {"bin_width": 10, "bin_height": 30, "item_width": 1, "item_height": 6, "optimum": 50},
+    "case19": {"bin_width": 6, "bin_height": 6, "item_width": 3, "item_height": 2, "optimum": 6},
+    "case20": {"bin_width": 20, "bin_height": 20, "item_width": 1, "item_height": 6},
+    "case21": {"bin_width": 20, "bin_height": 20, "item_width": 2, "item_height": 8},
+    "case22": {"bin_width": 20, "bin_height": 20, "item_width": 4, "item_height": 9},
+    "case23": {"bin_width": 20, "bin_height": 20, "item_width": 8, "item_height": 7},
+    "case24": {"bin_width": 20, "bin_height": 20, "item_width": 7, "item_height": 5, "optimum": 10},
+    "case25": {"bin_width": 10, "bin_height": 30, "item_width": 2, "item_height": 8},
+}
+
+
+class CaseRepository:
+    """Read-only-by-convention repository for validated packing cases."""
+
+    def __init__(self, cases=None):
+        self._cases = cases if cases is not None else DEFAULT_INSTANCES
+
+    def get(self, case_name):
+        if case_name not in self._cases:
+            available = ", ".join(sorted(self._cases))
+            raise ValueError(f"Unknown instance '{case_name}'. Available: {available}")
+        return self._normalize(case_name, self._cases[case_name])
+
+    def names(self):
+        return sorted(self._cases)
+
+    @staticmethod
+    def _normalize(case_name, instance):
+        for field_name in REQUIRED_INSTANCE_FIELDS:
+            if field_name not in instance:
+                raise ValueError(
+                    f"Invalid config for {case_name}: missing required field {field_name}"
+                )
+            value = instance[field_name]
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(
+                    f"Invalid config for {case_name}: {field_name} must be an integer"
+                )
+            if value <= 0:
+                raise ValueError(
+                    f"Invalid config for {case_name}: {field_name} must be greater than 0"
+                )
+
+        optimum = instance.get("optimum")
+        if optimum is not None:
+            if isinstance(optimum, bool) or not isinstance(optimum, int):
+                raise ValueError(f"Invalid config for {case_name}: optimum must be an integer")
+            if optimum < 0:
+                raise ValueError(
+                    f"Invalid config for {case_name}: optimum must be greater than or equal to 0"
+                )
+
+        return {
+            "case_name": case_name,
+            **{field: instance[field] for field in REQUIRED_INSTANCE_FIELDS},
+            "optimum": optimum,
+        }

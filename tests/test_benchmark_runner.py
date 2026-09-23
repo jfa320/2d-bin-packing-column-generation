@@ -237,7 +237,9 @@ def test_cli_defaults_and_smoke_override(monkeypatch, tmp_path):
     assert runner.main(["--input", "small.csv", "--expected-count", "2", "--time", "5",
                         "--output", "out.csv", "--trace", "out.trc"]) == 0
     assert calls[1] == (("small.csv", "out.csv"),
-                        {"max_time": 5, "expected_count": 2, "trace_path": "out.trc"})
+                        {"max_time": 5, "expected_count": 2, "trace_path": "out.trc",
+                         "run_paver_after": True, "paver_path": None,
+                         "paver_output": None})
 
 
 def test_default_output_and_lazy_import(tmp_path, monkeypatch):

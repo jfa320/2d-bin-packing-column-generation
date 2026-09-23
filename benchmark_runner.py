@@ -26,6 +26,7 @@ from utils.execution_result import (
     ExecutionResult,
 )
 from utils.paver_constants import PaverConstants
+from utils.paver_runner import run_paver as execute_paver
 
 
 PAVER = PaverConstants
@@ -124,7 +125,8 @@ def result_row(instance, result):
 
 
 def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
-                  expected_count=None, trace_path=None, execute=None):
+                  expected_count=None, trace_path=None, execute=None,
+                  run_paver_after=False, paver_path=None, paver_output=None):
     """Write fresh outputs and return the report Path; execute is a CG test seam.
 
     Relative output/trace paths are relative to the working directory. Solver
@@ -135,6 +137,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     source = Path(input_path).resolve()
     output = Path(output_path or Path("Results") / datetime.now().strftime(
         "benchmark_%Y%m%d_%H%M%S_%f.csv")).resolve()
+    if run_paver_after and trace_path is None:
+        trace_path = output.with_suffix(".trc")
     trace = Path(trace_path).resolve() if trace_path is not None else None
     paths = [source, output] + ([trace] if trace is not None else [])
     if len(set(paths)) != len(paths):
@@ -186,6 +190,18 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
             stream.flush()
             if trace_writer is not None:
                 trace_writer.write_trace_record(result)
+    if run_paver_after:
+        paver_result = execute_paver(
+            trace,
+            paver_path,
+            paver_output,
+            failtime=max_time,
+        )
+        if paver_result.success:
+            print(paver_result.message)
+        else:
+            # PAVER is post-processing; keep the CSV and trace even if it is unavailable.
+            print(f"ERROR: {paver_result.message}")
     return output
 
 
@@ -197,10 +213,23 @@ def main(argv=None):
     parser.add_argument("--time", type=float, default=1200, help="Seconds per instance")
     parser.add_argument("--expected-count", type=int, default=None,
                         help="Optional row-count assertion; by default all CSV rows are executed.")
+    paver_group = parser.add_mutually_exclusive_group()
+    paver_group.add_argument("--paver", dest="run_paver", action="store_true",
+                             help="Run PAVER after the CSV/trace are generated (default).")
+    paver_group.add_argument("--no-paver", dest="run_paver", action="store_false",
+                             help="Only generate the CSV and optional trace.")
+    parser.set_defaults(run_paver=True)
+    parser.add_argument("--paver-path", default=None,
+                        help="Override the PAVER root configured in paver.properties.")
+    parser.add_argument("--paver-output", default=None,
+                        help="Directory for the PAVER HTML report.")
     args = parser.parse_args(argv)
     try:
         output = run_benchmark(args.input, args.output, max_time=args.time,
-                               expected_count=args.expected_count, trace_path=args.trace)
+                               expected_count=args.expected_count, trace_path=args.trace,
+                               run_paver_after=args.run_paver,
+                               paver_path=args.paver_path,
+                               paver_output=args.paver_output)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(output)

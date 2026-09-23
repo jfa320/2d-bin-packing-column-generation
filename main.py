@@ -8,7 +8,7 @@ from models.comparative import Model_6_Andrade_Birgin_Monoitem
 from models.comparative import Model_7_Exact_Monoitem_Backtracking
 from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
 from utils.trace_file_generator import TraceFileGenerator
-from utils.execution_result import ExecutionResult
+from utils.execution_result import ColumnGenerationExecutionResult, ExecutionResult
 from utils.paver_constants import PaverConstants
 from utils.paver_runner import run_paver
 
@@ -23,6 +23,23 @@ MODELS = [
     Model_6_Andrade_Birgin_Monoitem,
     Model_7_Exact_Monoitem_Backtracking,
 ]
+
+
+def _execution_result(result):
+    if isinstance(result, ColumnGenerationExecutionResult):
+        return result.execution
+    return result
+
+
+def _print_objective_summary(results_by_case):
+    print("\nFinal objective values:")
+    for case_name, results in results_by_case.items():
+        print(f"{case_name}:")
+        for result in results:
+            execution = _execution_result(result)
+            objective = ("N/A" if execution.objective_value is None
+                         else f"{execution.objective_value:g}")
+            print(f"  {execution.model_name}: {objective}")
 
 
 def parse_args(argv=None):
@@ -74,8 +91,11 @@ def main(argv=None):
         raise ValueError("Duplicate case identifiers are not allowed")
     instances = [get_instance(case_name) for case_name in cases]
     generator = TraceFileGenerator(args.output, mode="append" if args.append else "overwrite")
+    results_by_case = {}
 
     for instance in instances:
+        case_results = []
+        results_by_case[instance["case_name"]] = case_results
 
         for model in MODELS:
             print(f"Model: {model.MODEL_NAME}")
@@ -88,6 +108,7 @@ def main(argv=None):
                     PAVER.TERMINATION_ERROR, None,
                     time.perf_counter() - started, error_message=str(error),
                 )
+            case_results.append(result)
             generator.write_trace_record(result)
 
     if args.run_paver:
@@ -103,6 +124,8 @@ def main(argv=None):
             # PAVER is an optional post-processing step. Its failure must not
             # erase or invalidate the trace produced by the model executions.
             print(f"ERROR: {paver_result.message}")
+
+    _print_objective_summary(results_by_case)
 
 
 if __name__ == '__main__':
