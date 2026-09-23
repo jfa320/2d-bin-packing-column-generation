@@ -31,15 +31,25 @@ def _execution_result(result):
     return result
 
 
+def _format_objective(value, missing="N/A"):
+    return missing if value is None else f"{value:g}"
+
+
 def _print_objective_summary(results_by_case):
     print("\nFinal objective values:")
-    for case_name, results in results_by_case.items():
-        print(f"{case_name}:")
+    for case_name, case_summary in results_by_case.items():
+        expected = _format_objective(
+            case_summary["expected_optimum"], missing="not configured"
+        )
+        print(f"{case_name} (expected optimum={expected}):")
+        results = case_summary["results"]
         for result in results:
             execution = _execution_result(result)
-            objective = ("N/A" if execution.objective_value is None
-                         else f"{execution.objective_value:g}")
-            print(f"  {execution.model_name}: {objective}")
+            objective = _format_objective(execution.objective_value)
+            print(
+                f"  {execution.model_name}: {objective} "
+                f"(time={execution.total_time_s:.3f} s)"
+            )
 
 
 def parse_args(argv=None):
@@ -95,7 +105,10 @@ def main(argv=None):
 
     for instance in instances:
         case_results = []
-        results_by_case[instance["case_name"]] = case_results
+        results_by_case[instance["case_name"]] = {
+            "expected_optimum": instance.get("optimum"),
+            "results": case_results,
+        }
 
         for model in MODELS:
             print(f"Model: {model.MODEL_NAME}")

@@ -6,7 +6,18 @@ from objects import Item
 import multiprocessing
 import time
 
-from models.common.position_generator import *
+def _generate_positions_no_height_limit(bin_width, bin_height, item_width):
+    """Return Model 4's historical candidate positions, including its height-unbounded Y set.
+
+    This legacy helper intentionally preserves Model 4's old behavior and is not
+    a valid substitute for the position generators used by active models.
+    """
+    x_positions = list(range(bin_width))
+    y_positions = list(range(bin_height))
+    valid_x_positions = [x for x in x_positions if x <= bin_width - item_width]
+    valid_y_positions = list(y_positions)
+    return x_positions, y_positions, valid_x_positions, valid_y_positions
+
 
 MODEL_NAME="Model4Esclavo"
 
@@ -41,7 +52,7 @@ ITEM_HEIGHT= 3 # h en el modelo
 S_star=[] #TODO Definir como le llega del maestro
 
 # Generación de posiciones factibles para ítems y sus versiones rotadas
-SET_POS_X, SET_POS_Y, SET_POS_X_I, SET_POS_Y_I = generate_positions_no_height_limit(BIN_WIDTH, BIN_HEIGHT, ITEM_WIDTH, ITEM_HEIGHT)
+SET_POS_X, SET_POS_Y, SET_POS_X_I, SET_POS_Y_I = _generate_positions_no_height_limit(BIN_WIDTH, BIN_HEIGHT, ITEM_WIDTH)
 SET_POS_X_I_ROT = [x for x in range(BIN_WIDTH) if x <= BIN_WIDTH - ITEM_HEIGHT]
 SET_POS_Y_I_ROT = [y for y in range(BIN_HEIGHT) if y <= BIN_HEIGHT]
 

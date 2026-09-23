@@ -6,7 +6,9 @@ from utils.trace_file_generator import TraceFileGenerator
 from objects import Slice
 from objects import Item
 
-from models.common.position_generator import *
+def _generate_master_model_positions(bin_height):
+    """Return all vertical grid coordinates used by Model 4's legacy master."""
+    return list(range(bin_height))
 
 NOMBRE_MODELO="Model4Maestro"
 
@@ -37,7 +39,7 @@ ITEM_HEIGHT= 3 # h en el modelo
 
 slices=[] #TODO CARGAR ARRAY CON LO DEL ESCLAVO
 slice_height = [] # H_r en el modelo #TODO CARGAR ARRAY
-SET_POS_Y= generate_master_model_positions(BIN_HEIGHT)
+SET_POS_Y= _generate_master_model_positions(BIN_HEIGHT)
 ITEMS_QUANTITY= 10 
 ITEMS = list(range(1, ITEMS_QUANTITY + 1)) # constante I del modelo
 

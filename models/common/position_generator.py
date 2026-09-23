@@ -19,22 +19,6 @@ def generate_positions_castro(bin_width, bin_height, item_width, item_height):
     return x_positions, y_positions, valid_x_positions, valid_y_positions
 
 
-def generate_positions_no_height_limit(bin_width, bin_height, item_width, item_height):
-    # TODO: evaluate whether this old slave helper should be removed.
-    x_positions = [x for x in range(bin_width)]
-    y_positions = [y for y in range(bin_height)]
-    valid_x_positions = [x for x in x_positions if x <= bin_width - item_width]
-    valid_y_positions = [y for y in y_positions if y <= bin_height]
-    return x_positions, y_positions, valid_x_positions, valid_y_positions
-
-
-def generate_master_model_positions(bin_height):
-    # TODO: evaluate whether this old master helper should be removed.
-    y_positions = [y for y in range(bin_height)]
-    valid_y_positions = [y for y in y_positions if y <= bin_height]
-    return valid_y_positions
-
-
 def generate_positions_cid_garcia(bin_width, bin_height, item_width, item_height):
     positions = []
 

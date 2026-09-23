@@ -16,6 +16,7 @@ def test_main_prints_final_objective_values(monkeypatch, tmp_path, capsys):
         "bin_height": 4,
         "item_width": 2,
         "item_height": 3,
+        "optimum": 4,
     }
 
     def model(name, result):
@@ -48,7 +49,7 @@ def test_main_prints_final_objective_values(monkeypatch, tmp_path, capsys):
 
     output = capsys.readouterr().out
     assert "Final objective values:" in output
-    assert "case1:" in output
-    assert "  Model5Orchestrator: 4" in output
-    assert "  Model1NoRotation: 3.5" in output
-    assert "  Model1Rotation: N/A" in output
+    assert "case1 (expected optimum=4):" in output
+    assert "  Model5Orchestrator: 4 (time=0.100 s)" in output
+    assert "  Model1NoRotation: 3.5 (time=0.100 s)" in output
+    assert "  Model1Rotation: N/A (time=0.100 s)" in output
