@@ -24,13 +24,31 @@ def stub_run(monkeypatch):
     seed = make_slice(0)
     monkeypatch.setattr(cg, "generate_initial_slices", lambda *args: [seed])
     monkeypatch.setattr(cg, "export_final_layout", lambda *args: None)
+    master_builds = []
+    incremental_updates = []
 
-    def build(*args):
+    def build_master(*args):
+        clock[0] += 1
+        master_builds.append(args[1])
+        return object()
+
+    def build_slave(*args):
         clock[0] += 1
         return object()
 
-    monkeypatch.setattr(cg, "create_master_model", build)
-    monkeypatch.setattr(cg, "create_slave_model", build)
+    class IncrementalMasterStub:
+        def __init__(self, model, slices, height_bin, width_bin):
+            self.model = model
+            self.slice_ids = {slice_.get_id() for slice_ in slices}
+
+        def add_slice(self, slice_):
+            incremental_updates.append(slice_.get_id())
+            self.slice_ids.add(slice_.get_id())
+            return True
+
+    monkeypatch.setattr(cg, "create_master_model", build_master)
+    monkeypatch.setattr(cg, "create_slave_model", build_slave)
+    monkeypatch.setattr(cg, "IncrementalMasterModel", IncrementalMasterStub)
     lp_values = iter([1.5, 2.5, 3.5])
 
     def master(model, queue, manual, relaxed, initial):
@@ -57,6 +75,8 @@ def stub_run(monkeypatch):
                                ConfigData(4, 4, 1, 1), return_structured=True,
                                finalization_heuristics=False, **kwargs)
 
+    run.master_builds = master_builds
+    run.incremental_updates = incremental_updates
     return run
 
 
@@ -66,12 +86,14 @@ def test_completed_iterations_and_phase_metrics(stub_run):
     assert result.metrics.generated_columns == 1
     assert result.metrics.lp_value == 2.5
     assert result.metrics.restricted_integer_master == 2
-    assert result.metrics.cg_time_s == 12
+    assert result.metrics.cg_time_s == 11
     assert result.metrics.integer_master_time_s == 3
-    assert result.execution.total_time_s == 15
+    assert result.execution.total_time_s == 14
     assert result.execution.objective_value == 2
     assert result.execution.model_status == 8
     assert result.execution.termination_status == "Normal"
+    assert len(stub_run.master_builds) == 2  # Initial LP master and final integer master.
+    assert len(stub_run.incremental_updates) == 1
 
 
 def test_seed_duplicate_not_counted(stub_run, monkeypatch):
@@ -191,6 +213,52 @@ def test_master_invalid_point_ignores_reported_feasibility(relaxed, raw):
     model.solution.is_primal_feasible.return_value = True
     assert master_problem.solve_master_model(model, Queue(), None, relaxed, 0) == (None, None, [])
     model.solution.get_objective_value.assert_not_called()
+
+
+def test_incremental_master_adds_column_and_new_cell_row():
+    class Variables:
+        type = SimpleNamespace(binary="B")
+
+        def __init__(self):
+            self.added = []
+
+        def add(self, **kwargs):
+            self.added.append(kwargs)
+
+    class LinearConstraints:
+        def __init__(self, names):
+            self.names = list(names)
+            self.added = []
+
+        def get_names(self):
+            return list(self.names)
+
+        def add(self, **kwargs):
+            self.added.append(kwargs)
+            self.names.extend(kwargs["names"])
+
+    seed, generated = make_slice(0), make_slice(1)
+    model = SimpleNamespace(
+        variables=Variables(),
+        linear_constraints=LinearConstraints(["consItem_0_0"]),
+    )
+    incremental = master_problem.IncrementalMasterModel(
+        model, [seed], height_bin=2, width_bin=4,
+    )
+
+    assert incremental.add_slice(generated)
+    variable = model.variables.added[0]
+    assert variable["names"] == [f"p_{generated.get_id()}"]
+    assert variable["obj"] == [generated.get_total_items()]
+    assert variable["ub"] == [1.0]
+    assert variable["columns"][0].ind == ["consItem_0_0"]
+    assert variable["columns"][0].val == [1.0]
+    assert model.linear_constraints.added[0]["names"] == ["consItem_1_0"]
+    assert model.linear_constraints.added[0]["lin_expr"][0].ind == [
+        f"p_{generated.get_id()}"
+    ]
+    assert model.linear_constraints.added[0]["rhs"] == [1.0]
+    assert not incremental.add_slice(generated)
 
 
 def test_pricing_infeasible_not_confused_with_feasible_string():

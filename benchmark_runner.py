@@ -124,34 +124,59 @@ def result_row(instance, result):
     }
 
 
-def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
-                  expected_count=None, trace_path=None, execute=None,
-                  run_paver_after=False, paver_path=None, paver_output=None):
-    """Write fresh outputs and return the report Path; execute is a CG test seam.
-
-    Relative output/trace paths are relative to the working directory. Solver
-    exceptions become composed error results; output I/O errors remain fatal.
-    """
-    if not math.isfinite(max_time) or max_time <= 0:
-        raise ValueError("max_time must be positive and finite")
-    source = Path(input_path).resolve()
+def _resolve_output_paths(output_path, trace_path, run_paver_after):
     output = Path(output_path or Path("Results") / datetime.now().strftime(
         "benchmark_%Y%m%d_%H%M%S_%f.csv")).resolve()
     if run_paver_after and trace_path is None:
         trace_path = output.with_suffix(".trc")
     trace = Path(trace_path).resolve() if trace_path is not None else None
+    return output, trace
+
+
+def _validate_distinct_paths(source, output, trace):
     paths = [source, output] + ([trace] if trace is not None else [])
     if len(set(paths)) != len(paths):
         raise ValueError("Input, output, and trace paths must be distinct")
-    for target in paths[1:]:
+
+
+def _confirm_overwrite(paths):
+    print("Ya existen estos archivos:")
+    for path in paths:
+        print(f"  {path}")
+    try:
+        response = input("¿Querés sobrescribirlos? [s/N]: ").strip().casefold()
+    except EOFError:
+        return False
+    return response in {"s", "si", "sí", "y", "yes"}
+
+
+def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
+                  expected_count=None, trace_path=None, execute=None,
+                  run_paver_after=False, paver_path=None, paver_output=None,
+                  overwrite=False):
+    """Write outputs and return the report Path; execute is a CG test seam.
+
+    Relative output/trace paths are relative to the working directory. Solver
+    exceptions become composed error results; output I/O errors remain fatal.
+    Existing files are replaced only when overwrite is explicitly enabled.
+    """
+    if not math.isfinite(max_time) or max_time <= 0:
+        raise ValueError("max_time must be positive and finite")
+    source = Path(input_path).resolve()
+    output, trace = _resolve_output_paths(output_path, trace_path, run_paver_after)
+    _validate_distinct_paths(source, output, trace)
+    targets = [output] + ([trace] if trace is not None else [])
+    for target in targets:
         if target.exists():
-            raise FileExistsError(f"Output already exists: {target}")
+            if not overwrite:
+                raise FileExistsError(f"Output already exists: {target}")
     instances = load_instances(source, expected_count)
     if execute is None:
         from models.column_generation.column_generation_solver import execute_with_time_limit
         execute = execute_with_time_limit
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x", newline="", encoding="utf-8") as stream:
+    output_mode = "w" if overwrite else "x"
+    with output.open(output_mode, newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=OUTPUT_FIELDS)
         writer.writeheader()
         stream.flush()
@@ -159,8 +184,9 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
         if trace is not None:
             from utils.trace_file_generator import TraceFileGenerator
             trace.parent.mkdir(parents=True, exist_ok=True)
-            # Reserve exclusively before handing ownership to the overwrite writer.
-            with trace.open("x"):
+            # Ensure the target exists before the trace writer takes ownership.
+            trace_mode = "w" if overwrite else "x"
+            with trace.open(trace_mode):
                 pass
             trace_writer = TraceFileGenerator(str(trace), mode="overwrite", directory="Results")
         for instance in instances:
@@ -224,12 +250,33 @@ def main(argv=None):
     parser.add_argument("--paver-output", default=None,
                         help="Directory for the PAVER HTML report.")
     args = parser.parse_args(argv)
+    source = Path(args.input).resolve()
+    output_path, trace_path = _resolve_output_paths(
+        args.output, args.trace, args.run_paver,
+    )
     try:
-        output = run_benchmark(args.input, args.output, max_time=args.time,
-                               expected_count=args.expected_count, trace_path=args.trace,
+        _validate_distinct_paths(source, output_path, trace_path)
+    except ValueError as error:
+        parser.error(str(error))
+
+    output_targets = [output_path] + (
+        [trace_path] if trace_path is not None else []
+    )
+    existing_outputs = [path for path in output_targets if path.exists()]
+    overwrite = False
+    if existing_outputs:
+        if not _confirm_overwrite(existing_outputs):
+            print("Cancelado. No se modificó ningún archivo.")
+            return 1
+        overwrite = True
+
+    try:
+        output = run_benchmark(args.input, output_path, max_time=args.time,
+                               expected_count=args.expected_count, trace_path=trace_path,
                                run_paver_after=args.run_paver,
                                paver_path=args.paver_path,
-                               paver_output=args.paver_output)
+                               paver_output=args.paver_output,
+                               overwrite=overwrite)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(output)

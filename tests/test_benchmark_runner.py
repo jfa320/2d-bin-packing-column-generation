@@ -230,16 +230,69 @@ def test_protect_outputs_and_paths(tmp_path, collision):
 
 def test_cli_defaults_and_smoke_override(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(runner, "run_benchmark", lambda *args, **kwargs: calls.append((args, kwargs)) or tmp_path)
     assert runner.main([]) == 0
-    assert calls[0][0] == (runner.DEFAULT_INPUT, None)
+    assert calls[0][0][0] == runner.DEFAULT_INPUT
+    assert calls[0][0][1].parent == tmp_path / "Results"
     assert calls[0][1]["expected_count"] is None
+    assert calls[0][1]["trace_path"] == calls[0][0][1].with_suffix(".trc")
+    assert calls[0][1]["overwrite"] is False
     assert runner.main(["--input", "small.csv", "--expected-count", "2", "--time", "5",
                         "--output", "out.csv", "--trace", "out.trc"]) == 0
-    assert calls[1] == (("small.csv", "out.csv"),
-                        {"max_time": 5, "expected_count": 2, "trace_path": "out.trc",
+    assert calls[1] == (("small.csv", tmp_path / "out.csv"),
+                        {"max_time": 5, "expected_count": 2, "trace_path": tmp_path / "out.trc",
                          "run_paver_after": True, "paver_path": None,
-                         "paver_output": None})
+                         "paver_output": None, "overwrite": False})
+
+
+def test_cli_confirms_before_overwriting_existing_output(tmp_path, monkeypatch, capsys):
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "report.csv"
+    output.write_text("old report", encoding="utf-8")
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return output
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "run_benchmark", run)
+    monkeypatch.setattr("builtins.input", lambda prompt: "s")
+
+    assert runner.main(["--input", str(source), "--output", str(output), "--no-paver"]) == 0
+    assert calls[0][0] == (str(source), output)
+    assert calls[0][1]["overwrite"] is True
+    assert str(output) in capsys.readouterr().out
+
+
+def test_cli_declining_overwrite_preserves_existing_output(tmp_path, monkeypatch, capsys):
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "report.csv"
+    output.write_text("old report", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Benchmark must not run after declining overwrite")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "run_benchmark", forbidden)
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    assert runner.main(["--input", str(source), "--output", str(output), "--no-paver"]) == 1
+    assert output.read_text(encoding="utf-8") == "old report"
+    assert "No se modificó ningún archivo" in capsys.readouterr().out
+
+
+def test_run_benchmark_overwrite_replaces_existing_output(tmp_path):
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "report.csv"
+    output.write_text("old report", encoding="utf-8")
+
+    assert runner.run_benchmark(
+        source, output, expected_count=1, execute=lambda *a, **k: make_result(),
+        overwrite=True,
+    ) == output.resolve()
+    assert read_report(output)[0]["instance"] == "sample_0"
 
 
 def test_default_output_and_lazy_import(tmp_path, monkeypatch):

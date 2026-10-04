@@ -6,7 +6,7 @@ responsibilities are split into model construction, solving and dual mapping.
 
 import cplex
 
-from utils.cplex_helpers import add_constraint_set, add_variables
+from utils.cplex_helpers import add_constraint, add_constraint_set, add_variables
 from utils.paver_constants import PaverConstants
 from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
 
@@ -83,6 +83,60 @@ class MasterModelBuilder:
                 item.get_position(), item.get_width(), item.get_height()
             ))
         return cells
+
+
+class IncrementalMasterModel:
+    """Track the cell rows and slice variables of a persistent master model."""
+
+    def __init__(self, model, slices, height_bin, width_bin):
+        self.model = model
+        self.height_bin = height_bin
+        self.width_bin = width_bin
+        self.row_by_cell = {}
+        for name in model.linear_constraints.get_names():
+            if name.startswith("consItem_"):
+                _, x, y = name.split("_")
+                self.row_by_cell[(int(x), int(y))] = name
+        self.slice_ids = {slice_.get_id() for slice_ in slices}
+
+    def add_slice(self, slice_):
+        """Append one new slice variable and any cell rows it introduces."""
+        slice_id = slice_.get_id()
+        if slice_id in self.slice_ids:
+            return False
+
+        variable_name = f"p_{slice_id}"
+        cells = {
+            (x, y)
+            for x, y in MasterModelBuilder._slice_cells(slice_)
+            if 0 <= x < self.width_bin and 0 <= y < self.height_bin
+        }
+        existing_cells = sorted(cells & self.row_by_cell.keys())
+        new_cells = sorted(cells - self.row_by_cell.keys())
+
+        variable_args = {
+            "names": [variable_name],
+            "obj": [slice_.get_total_items()],
+            "lb": [0.0],
+            "ub": [1.0],
+            "types": [self.model.variables.type.binary],
+        }
+        if existing_cells:
+            variable_args["columns"] = [cplex.SparsePair(
+                ind=[self.row_by_cell[cell] for cell in existing_cells],
+                val=[1.0] * len(existing_cells),
+            )]
+        self.model.variables.add(**variable_args)
+
+        for x, y in new_cells:
+            row_name = f"consItem_{x}_{y}"
+            add_constraint(
+                self.model, [1.0], [variable_name], 1.0, "L", row_name
+            )
+            self.row_by_cell[(x, y)] = row_name
+
+        self.slice_ids.add(slice_id)
+        return True
 
 
 class DualExtractor:

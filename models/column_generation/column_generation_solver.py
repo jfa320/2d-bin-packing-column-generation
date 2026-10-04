@@ -7,7 +7,11 @@ from utils.paver_constants import PaverConstants
 from objects import Slice
 
 from models.common.position_generator import generate_positions_xym2
-from models.column_generation.master_problem import create_master_model, solve_master_model
+from models.column_generation.master_problem import (
+    IncrementalMasterModel,
+    create_master_model,
+    solve_master_model,
+)
 from models.column_generation.slave_problem import create_slave_model, solve_slave_model
 from models.column_generation.orchestrator_services import (
     calculate_slice_height,
@@ -193,11 +197,37 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         previous_master_objective = None
         previous_stabilized_dual_prices = None
 
-        while True:
-            # TODO: This could be improved by avoiding model recreation on every loop.
-            # Instead, one model could be created and new columns (slices) added to it.
+        master_model = create_master_model(
+            max_time, slices, bin_height, bin_width, item_height, item_width,
+            positions_xy_x, positions_xy_y,
+        )
+        incremental_master = IncrementalMasterModel(
+            master_model, slices, bin_height, bin_width,
+        )
+        synchronized_slice_count = len(slices)
 
-            master_model = create_master_model(max_time, slices, bin_height, bin_width, item_height, item_width, positions_xy_x, positions_xy_y)
+        while True:
+            pending_slices = slices[synchronized_slice_count:]
+            if pending_slices:
+                try:
+                    for slice_ in pending_slices:
+                        incremental_master.add_slice(slice_)
+                except Exception as error:
+                    # A failed CPLEX mutation may leave its model partially updated.
+                    # Discard it and restore a consistent master from the full pool.
+                    print(
+                        "Incremental master update failed; rebuilding the master: "
+                        f"{error}"
+                    )
+                    master_model = create_master_model(
+                        max_time, slices, bin_height, bin_width, item_height,
+                        item_width, positions_xy_x, positions_xy_y,
+                    )
+                    incremental_master = IncrementalMasterModel(
+                        master_model, slices, bin_height, bin_width,
+                    )
+                synchronized_slice_count = len(slices)
+
             # Solve master model
             objective_master, dual_prices, _ = solve_master_model(master_model, queue, manual_interruption, True, initial_time)
             if objective_master is None or dual_prices is None:
