@@ -96,6 +96,54 @@ def test_completed_iterations_and_phase_metrics(stub_run):
     assert len(stub_run.incremental_updates) == 1
 
 
+def test_failed_incremental_update_rebuilds_master(stub_run, monkeypatch, capsys):
+    original_build = cg.create_master_model
+    original_solve = cg.solve_master_model
+    incremental_stub = cg.IncrementalMasterModel
+    builds = []
+    relaxed_solves = []
+    update_attempts = []
+
+    def build(*args):
+        original_build(*args)
+        model = SimpleNamespace(partially_updated=False)
+        builds.append((model, tuple(slice_.get_id() for slice_ in args[1])))
+        return model
+
+    def solve(model, queue, manual, relaxed, initial):
+        if relaxed:
+            relaxed_solves.append(model)
+        return original_solve(model, queue, manual, relaxed, initial)
+
+    class FailingOnce(incremental_stub):
+        def add_slice(self, slice_):
+            update_attempts.append(slice_.get_id())
+            if len(update_attempts) == 1:
+                self.model.partially_updated = True
+                raise RuntimeError("simulated CPLEX mutation failure")
+            return super().add_slice(slice_)
+
+    monkeypatch.setattr(cg, "create_master_model", build)
+    monkeypatch.setattr(cg, "solve_master_model", solve)
+    monkeypatch.setattr(cg, "IncrementalMasterModel", FailingOnce)
+
+    generated = make_slice(1)
+    result = stub_run([(generated, 1, ["z_x_1_0"]), (None, 0, [])])
+
+    assert result.execution.termination_status == "Normal"
+    assert result.execution.objective_value == 2
+    assert result.metrics.cg_iterations == 2
+    assert result.metrics.generated_columns == 1
+    assert len(builds) == 3  # Initial LP, fallback LP, final integer master.
+    assert builds[1][1] == (make_slice(0).get_id(), generated.get_id())
+    assert relaxed_solves == [builds[0][0], builds[1][0]]
+    assert builds[0][0].partially_updated
+    assert not builds[1][0].partially_updated
+    assert update_attempts == [generated.get_id()]
+    assert stub_run.incremental_updates == []
+    assert "simulated CPLEX mutation failure" in capsys.readouterr().out
+
+
 def test_seed_duplicate_not_counted(stub_run, monkeypatch):
     monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", True)
     result = stub_run([(make_slice(0), 1, ["z_x_0_0"])])
@@ -237,7 +285,9 @@ def test_incremental_master_adds_column_and_new_cell_row():
             self.added.append(kwargs)
             self.names.extend(kwargs["names"])
 
-    seed, generated = make_slice(0), make_slice(1)
+    seed = make_slice(0)
+    generated = Slice(height=1, width=4, items=[
+        Item(height=1, width=2, rotated=False, position_x=0, position_y=0)])
     model = SimpleNamespace(
         variables=Variables(),
         linear_constraints=LinearConstraints(["consItem_0_0"]),
