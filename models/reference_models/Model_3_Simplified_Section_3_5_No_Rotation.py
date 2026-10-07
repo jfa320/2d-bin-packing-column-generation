@@ -2,7 +2,7 @@ import cplex
 from cplex.exceptions import CplexSolverError
 import multiprocessing
 import time
-from models.common.position_generator import generate_positions_cid_garcia, create_c_matrix
+from models.reference_models.position_generator import generate_positions_cid_garcia, create_c_matrix
 from utils.model_functions import *
 from config import *
 

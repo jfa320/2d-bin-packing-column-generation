@@ -6,7 +6,7 @@ from utils.execution_result import ExecutionResult, ColumnGenerationMetrics, Col
 from utils.paver_constants import PaverConstants
 from objects import Slice
 
-from models.common.position_generator import generate_positions_xym2
+from models.common.position_generator import generate_positions_xym
 from models.column_generation.master_problem import (
     IncrementalMasterModel,
     create_master_model,
@@ -183,7 +183,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         slice_height = normalized_problem.slice_height
 
         # Generate bin positions
-        positions_xy_x, positions_xy_y = generate_positions_xym2(bin_width, bin_height, item_width, item_height)
+        positions_xy_x, positions_xy_y = generate_positions_xym(bin_width, bin_height, item_width, item_height)
 
         physical_item_bound = calculate_physical_item_bound(bin_width, bin_height, item_width, item_height)
 

@@ -20,7 +20,7 @@ def make_slice(x):
 def stub_run(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
-    monkeypatch.setattr(cg, "generate_positions_xym2", lambda *args: ([], []))
+    monkeypatch.setattr(cg, "generate_positions_xym", lambda *args: ([], []))
     seed = make_slice(0)
     monkeypatch.setattr(cg, "generate_initial_slices", lambda *args: [seed])
     monkeypatch.setattr(cg, "export_final_layout", lambda *args: None)
@@ -410,7 +410,7 @@ def test_parent_queue_creation_failure_is_structured(monkeypatch):
 
 
 def test_child_exception_before_first_solve_is_reported(monkeypatch):
-    monkeypatch.setattr(cg, "generate_positions_xym2", Mock(side_effect=ValueError("bad positions")))
+    monkeypatch.setattr(cg, "generate_positions_xym", Mock(side_effect=ValueError("bad positions")))
     queue = Queue()
     result = cg.orchestrator(queue, None, 1, 0, ConfigData(4, 4, 1, 1), return_structured=True)
     assert result.execution.termination_status == "Error"
