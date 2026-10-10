@@ -1,279 +1,274 @@
-# Algoritmo
+# Algoritmo de generación de columnas
 
-## Flujo general del algoritmo
+## Alcance y estado de esta descripción
 
-El enfoque implementado utiliza un esquema de generación de columnas compuesto por un modelo maestro y un modelo esclavo, también denominado problema de *pricing*.
+El problema estudiado es el Manufacturer's Pallet Loading Problem (MPLP): un único bin rectangular, ítems rectangulares idénticos, rotación de 90° permitida y maximización de la cantidad de ítems ubicados. La cota de cantidad utilizada por el algoritmo proviene del cociente de áreas, no del óptimo de referencia del catálogo.
 
-El modelo maestro selecciona las rebanadas que forman la solución, mientras que el modelo esclavo genera nuevas rebanadas a partir de los valores duales obtenidos al resolver la relajación lineal del maestro.
+Esta descripción fue contrastada el **8 de octubre de 2026** con el código del commit `f2c05ba`. Los resultados de diagnóstico fechados más abajo son observaciones de esa revisión; los cambios de versión, parámetros o trayectoria del solver pueden producir otro pool.
+
+## Flujo del algoritmo base
+
+`USE_PRACTICAL_CG_ENHANCEMENTS` vale `False` por defecto. El diagrama describe ese flujo; los mecanismos opcionales se detallan en una sección propia.
 
 ```mermaid
 flowchart TD
-    A[Definir la instancia] --> B[Generar posiciones válidas]
+    A[Leer y normalizar la instancia] --> B[Generar posiciones válidas]
     B --> C[Generar rebanadas iniciales]
-    C --> D[Inicializar el modelo maestro]
-    D --> E[Resolver el modelo maestro relajado]
-    E --> F[Obtener los valores duales]
-    F --> G[Resolver el modelo esclavo<br/>o problema de pricing]
-
-    G --> H{¿Se encontró una rebanada<br/>mejorante?}
-
-    H -- Sí --> I{¿La rebanada ya existe?}
-
-    I -- No --> J[Agregar la rebanada<br/>como nueva columna del maestro]
-    J --> E
-
-    I -- Sí --> K[Agregar un no-good cut<br/>al modelo esclavo]
-    K --> G
-
-    H -- No --> L[Finalizar la generación de columnas]
-    L --> M[Resolver el modelo maestro entero]
-    M --> N[Obtener la solución final]
+    C --> D[Construir el maestro inicial]
+    D --> E[Resolver el maestro relajado]
+    E --> F{¿Hay objetivo y duales válidos?}
+    F -- Sí --> G[Construir y resolver pricing]
+    F -- No --> L[Finalizar generación]
+    G --> H{¿Devuelve una columna nueva<br/>con valor mayor que EPS?}
+    H -- Sí --> I[Agregar la columna al pool]
+    I --> J[Actualizar el maestro incrementalmente]
+    J --> K{¿La actualización tuvo éxito?}
+    K -- Sí --> E
+    K -- No --> R[Reconstruir el maestro desde el pool]
+    R --> E
+    H -- No --> L
+    L --> M[Construir un maestro entero nuevo<br/>con las columnas del pool]
+    M --> N[Resolver y devolver el resultado disponible]
 ```
 
-El proceso comienza con la definición de la instancia, la generación de las posiciones válidas y la construcción de un conjunto inicial de rebanadas.
+El maestro LP se conserva entre iteraciones. `IncrementalMasterModel.add_slice` agrega la variable de una rebanada, sus coeficientes en filas existentes y las filas de las celdas nuevas que ocupa. Si una actualización falla, el orquestador descarta el maestro posiblemente modificado en forma parcial y lo reconstruye a partir del pool completo. El maestro entero final se construye de nuevo.
 
-A continuación, se resuelve la relajación lineal del modelo maestro y se obtienen sus valores duales. Estos valores son utilizados por el modelo esclavo o problema de *pricing* para buscar una nueva rebanada mejorante.
+### Trazabilidad del código
 
-Si la rebanada encontrada todavía no forma parte del maestro, se incorpora como una nueva columna y se vuelve a resolver el modelo maestro relajado.
+| Responsabilidad | Archivo y funciones o clases |
+|---|---|
+| Instancia y proceso con límite temporal | [column_generation_solver.py](../models/column_generation/column_generation_solver.py): `execute_with_time_limit`, `orchestrator` |
+| Normalización, alto y cota por área | [orchestrator_services.py](../models/column_generation/orchestrator_services.py): `ProblemNormalizer`, `calculate_slice_height`, `calculate_physical_item_bound` |
+| Posiciones para ambas orientaciones | [position_generator.py](../models/common/position_generator.py): `generate_positions_xym` |
+| Pool inicial y registro de firmas | `orchestrator_services.py`: `InitialSliceGenerator.generate`, `SliceRegistry`, `build_slice_signature` |
+| Construcción y actualización del maestro | [master_problem.py](../models/column_generation/master_problem.py): `MasterModelBuilder`, `IncrementalMasterModel` |
+| Resolución LP/IP y extracción de duales | `master_problem.py`: `MasterSolver`, `DualExtractor` |
+| Construcción y resolución del pricing | [slave_problem.py](../models/column_generation/slave_problem.py): `SlaveModelBuilder`, `SlaveSolver`, `SlaveSolutionMapper` |
+| Cortes opcionales | `orchestrator_services.py`: `SlaveCutManager` |
+| Conversión de coordenadas para la salida | `orchestrator_services.py`: `SolutionMapper.denormalize` |
 
-Si la rebanada ya había sido generada, se agrega un *no-good cut* al modelo esclavo para excluir esa solución y buscar una rebanada alternativa.
+```text
+execute_with_time_limit(instance)
+└─ orchestrator(ConfigData)
+   ├─ normalizar dimensiones
+   ├─ generate_positions_xym
+   ├─ generate_initial_slices → SliceRegistry
+   ├─ construir maestro inicial
+   ├─ repetir: actualizar maestro → resolver LP → duales → pricing
+   │  └─ aceptar columna, aplicar mecanismos opcionales o detener
+   └─ construir y resolver maestro entero → desnormalizar la solución
+```
 
-Cuando el modelo esclavo no encuentra nuevas rebanadas mejorantes, finaliza la generación de columnas. Finalmente, se resuelve el modelo maestro entero utilizando las columnas generadas y se obtiene la solución final.
+La generación de posiciones requiere `bin_width >= bin_height` e `item_width >= item_height`. El orquestador normaliza las dimensiones antes de llamarla y transforma la solución de vuelta para su salida.
 
-## Condiciones de corte:
+## Definición y representación de rebanada
 
-1. Si el modelo esclavo no genera una rebanada válida, se detiene el proceso.
-2. Si el modelo esclavo devuelve una rebanada ya generada previamente, la rebanada no se agrega. En su lugar, se agrega una restricción de exclusión (no-good cut) para excluir esa solución del esclavo y se intenta buscar una alternativa durante un número acotado de iteraciones. Si no se encuentra una alternativa nueva mejorante, se detiene la generación.
-3. Si el costo reducido es cercano a cero, se permite una fase adicional de exploración para buscar rebanadas alternativas. Esta fase está acotada por un máximo de M iteraciones.
-4. Si el modelo maestro no mejora luego de N iteraciones, se detiene el proceso por posible estancamiento.
-5. El proceso iterativo continúa resolviendo el modelo maestro relajado y el modelo esclavo hasta que se cumple alguna condición de corte.
-6. Finalmente, se resuelve el modelo maestro en su versión entera con todas las rebanadas generadas para obtener la solución final.
+Una rebanada agrupa ítems cuyos puntos iniciales están dentro de una misma ventana horizontal de ancho `W`, igual al ancho del bin, y alto nominal `hr`. Sus ítems pueden sobresalir por arriba de la ventana, respetando los límites del bin.
 
----
-## En cada iteración:
+El pricing selecciona a lo sumo una base `y_base` y exige, para cada ítem elegido:
 
-1. Se resuelve el modelo maestro relajado
-2. Se obtienen duales
-3. Se resuelve el modelo esclavo con esos duales
-4. Se obtiene una nueva rebanada
-5. Se decide si agregarla al maestro o finalizar el proceso en base a las condiciones de corte
+```text
+y_base <= y_inicial < y_base + hr
+```
 
----
+El borde superior se excluye mediante la comparación estricta de coordenadas enteras. Esta condición geométrica no utiliza el `EPS` del criterio de costo reducido. Además, el pricing limita el tamaño completo de cada ítem al bin y evita solapamientos por celda.
 
-## Rol de cada modelo
-
-### Maestro
-
-- selecciona rebanadas que maximizan la cantidad items
-- asegura que no haya colisiones entre los items de las rebanadas elegidas
-
-
-### Esclavo
-
-- genera nuevas rebanadas que potencialmente mejoran la solución actual
-- determina la ubicación de los ítems dentro del bin
-- Nota: puede devolver una rebanada ya generada en casos de degeneración o empates; en ese caso la implementación la descarta y fuerza la búsqueda de una alternativa
-
----
-
-## Definición de rebanada
-Una rebanada es un espacio dentro del bin que se extiende de un extremo al otro de su ancho, de forma análoga a un corte guillotina horizontal, donde se ubica un conjunto de ítems. Cada ítem posee una posición `(x, y)` correspondiente a la esquina inferior izquierda desde donde es ubicado.
-
-La rebanada tiene asociados un ancho `W` (igual al ancho del bin) y un alto `hr`. Sin embargo, los ítems que la componen pueden exceder hacia arriba dicho alto, por lo que el contorno ocupado por la rebanada no necesariamente coincide con un rectángulo de dimensiones `W x hr`. 
-
-Como condición de pertenencia, la esquina inferior izquierda de cada ítem debe ubicarse dentro de la región de ancho `W` y alto `hr - ε`, donde ε es un valor positivo pequeño utilizado para evitar que un ítem quede exactamente sobre el borde superior de la rebanada.
+`calculate_slice_height` usa como objetivo inicial el 5% de la cota por área, estima las filas necesarias en cada orientación y toma el menor alto obtenido. Para `50 x 20 / 13 x 8`, el alto nominal es `8`.
 
 ### Representación interna
 
-Cada rebanada almacena:
+[Slice.py](../objects/Slice.py) almacena:
 
-- `id`: identificador único.
-- `ancho`: ancho de la rebanada.
-- `alto`: alto de la rebanada.
-- `items`: lista de ítems contenidos en la rebanada.
-- `puntosDeInicioItems`: lista de posiciones `(x, y)` correspondientes a los puntos de inicio de los ítems.
+- identificador, ancho y alto nominal;
+- lista de ítems;
+- puntos iniciales de los ítems.
 
-### Relación con los ítems
+Cada ítem contiene dimensiones, orientación y una posición absoluta `(x,y)` en el sistema de coordenadas del bin. `Slice` no guarda un origen propio ni la variable `y_base` seleccionada en el pricing. El contorno ocupado puede ser mayor que el rectángulo nominal de la ventana.
 
-Cada ítem contenido en una rebanada posee una posición `(x, y)` expresada en el sistema de coordenadas del bin. Esta posición corresponde a la esquina inferior izquierda del ítem y no es relativa a la rebanada.
+El maestro selecciona rebanadas que ya vienen ubicadas; no decide dónde desplazarlas. Dos disposiciones relativas iguales a distinta altura son columnas distintas.
 
-La rebanada no posee una posición propia, sino que queda completamente determinada por las posiciones absolutas de los ítems que la componen dentro del bin. En consecuencia, dos rebanadas con la misma disposición relativa de ítems, pero ubicadas a distinta altura, se consideran rebanadas distintas.
+## Maestro y señal dual
 
----
+Para el pool actual `S`, el maestro maximiza:
 
-## Rebanadas repetidas
+```text
+sum(cantidad_de_items(s) * p_s, s en S)
+```
 
-Una rebanada se considera repetida si coincide con una rebanada ya generada previamente según la posición y orientación de sus ítems.
+Para cada celda cubierta por al menos una columna del pool agrega:
 
-La implementación construye una firma de cada rebanada a partir de las tuplas `(x, y, rotado)` de sus ítems. Si la firma de una rebanada candidata ya pertenece al conjunto de firmas generadas, la rebanada no se agrega al maestro.
+```text
+sum(p_s, s que cubre la celda (x,y)) <= 1
+```
 
-Desde el punto de vista de generación de columnas, una columna ya presente en el maestro no aporta una mejora nueva. Sin embargo, debido a degeneración, empates o tolerancias numéricas, el esclavo puede volver a devolver una rebanada conocida.
+La ocupación de cada columna es la unión de las celdas de sus ítems. El coeficiente por columna y celda es `1`. Las variables se construyen binarias, con cotas `0` y `1`, y se convierten a continuas al resolver el LP. En el maestro entero final son binarias.
 
----
+`DualExtractor` transforma `consItem_x_y` en `dual_prices["pi"]["(x,y)"]`. El pricing usa precio cero para una celda sin entrada dual. El contrato de nombres debe conservarse entre ambos modelos.
 
-## No-good cuts
+Varias celdas pueden tener la misma incidencia entre columnas. Esa redundancia permite soluciones duales muy concentradas. En la inicialización del caso `50 x 20 / 13 x 8` se verificó:
 
-Un no-good cut es una restricción agregada al modelo esclavo para impedir que vuelva a devolver exactamente la misma solución.
+```text
+pi(0,0) = 3
+pi(0,8) = 3
+resto = 0
+```
 
-Si una solución del esclavo activa las variables `z_1, z_2, ..., z_k`, se agrega la restricción `z_1 + z_2 + ... + z_k <= k - 1`.
+La concentración puede favorecer columnas que evitan unas pocas celdas caras. Es evidencia de degeneración, pero no prueba por sí sola que la solución entera vaya a ser subóptima.
 
-De esta forma, al menos una de esas variables debe cambiar en la siguiente solución. En la implementación, esto se usa para excluir rebanadas repetidas o soluciones ya exploradas durante la fase de búsqueda adicional.
+## Pricing, firmas y criterio de aceptación
 
----
+El pricing tiene variables binarias de ubicación `z_x_a_b` y `z_y_a_b`. Su objetivo es:
 
-## Condiciones de finalización
+```text
+valor(s) = cantidad_de_items(s) - suma_de_duales_de_sus_celdas_ocupadas
+```
 
-- el esclavo no genera una rebanada válida
-- no se encuentra una rebanada nueva con costo reducido positivo
-- se detectan rebanadas repetidas y no se logra obtener una alternativa nueva luego de aplicar no-good cuts
-- el maestro se estanca luego de varias iteraciones sin mejora significativa
-- se alcanza el límite de intentos adicionales o de tiempo
+Cada ubicación aporta `1 - suma(pi de las celdas que ocupa)`. Como los ítems de una columna no se solapan, la suma de estos coeficientes coincide con el valor de la columna calculado a partir de su ocupación.
 
----
-## Detalles importantes:
+El flujo base devuelve una solución del pricing por iteración. Acepta una columna nueva si su valor es mayor que `EPS = 1e-9`. La firma es la tupla ordenada de `(x,y,rotado)` de sus ítems; no depende de sus identificadores.
 
-- el modelo maestro no posiciona rebanadas ni items. Simplemente elige las rebanadas cuyos items no colisionan entre sí
-- en línea a lo anterior, la rebanada viene armada desde el esclavo con sus items y con ellos su ubicación en el bin
+El flujo base se detiene cuando:
 
----
+- no dispone de objetivo LP y duales válidos;
+- el pricing no devuelve una solución factible;
+- el valor devuelto por el pricing es menor o igual a `EPS`;
+- devuelve una columna duplicada con valor positivo;
+- no genera una rebanada utilizable.
 
-## Diagnóstico del caso `50 x 20`, item `13 x 8`
+Un duplicado no se agrega al pool. Cuando las heurísticas están desactivadas, no se busca otra columna después de ese duplicado.
 
-### Caso observado
+### Alcance de las condiciones de parada
 
-Para el caso:
+La ausencia de columnas mejorantes certifica el cierre del LP completo solamente si el pricing correspondiente está resuelto con una prueba suficiente y cubre el universo de columnas considerado. El código actual permite devolver un incumbente factible de pricing aunque la resolución termine por límite.
 
-- bin: `50 x 20`
-- item: `13 x 8`
-- rotación permitida: `8 x 13`
+Si ese incumbente tiene valor no positivo, el orquestador puede detenerse sin consultar una cota que descarte otras columnas positivas. Conserva el estado de terminación anormal; ese resultado no debe interpretarse como prueba de convergencia LP. Tampoco el corte por duplicado o por estancamiento constituye esa prueba.
 
-el algoritmo obtiene una solución entera de `6` ítems, usando dos rebanadas iniciales homogéneas:
+## Heurísticas opcionales y estabilización
 
-- una rebanada inferior con 3 ítems no rotados
-- una rebanada superior con 3 ítems no rotados
+El argumento `finalization_heuristics` puede sobrescribir `USE_PRACTICAL_CG_ENHANCEMENTS`. El runner de benchmarks pasa explícitamente `False`, incluso si se cambia el flag global.
 
-Geométricamente existe una solución de `7` ítems si se reemplaza la rebanada inferior por una rebanada mixta:
+| Mecanismo | Base, flag desactivado | Con heurísticas activadas |
+|---|---|---|
+| Duplicado positivo | Detener | Hasta `MAX_EXTRA = 5` intentos de encontrar una alternativa nueva positiva |
+| Valor menor o igual a `EPS` | Detener | Hasta 5 intentos extra, forzando columnas no vacías y rechazando valores menores que `-EPS` |
+| Segunda fase del pricing | Desactivada | Mantener el objetivo original dentro de `1e-8` y maximizar cantidad de ítems; devolverla si aumenta la cardinalidad |
+| Estancamiento LP | Sin ese corte | Detener tras `MAX_STAGNATION = 1000` iteraciones con mejora absoluta menor o igual a `EPS_MASTER = 1e-4` |
 
-- 3 ítems no rotados en `(0,0)`, `(13,0)`, `(26,0)`
-- 1 ítem rotado en `(39,0)`
-- más la rebanada superior de 3 ítems no rotados
+La exploración adicional termina la generación después de esos intentos. No es una enumeración exhaustiva de columnas y no garantiza un pool suficiente para el óptimo entero.
 
-La rebanada mixta esperada es:
+La estabilización usa un flag independiente, `USE_DUAL_STABILIZATION = False`, con `ALPHA_DUAL_STABILIZATION = 0.2`. Pasar `finalization_heuristics=False` evita también su aplicación. Activar las heurísticas prácticas no activa automáticamente la estabilización.
+
+### Alcance real de los no-good cuts
+
+`SlaveCutManager` agrega, para un conjunto de variables activas `A`:
+
+```text
+sum(z_i, i en A) <= len(A) - 1
+```
+
+Esto excluye la solución original y todos sus superconjuntos: obliga a quitar al menos una ubicación de `A`, aunque se agreguen otras ubicaciones. Por lo tanto, el corte implementado es más fuerte que excluir únicamente una solución exacta.
+
+En el diagnóstico se verificó que cortar los tres NR en `(0,0)`, `(13,0)` y `(26,0)` impide también generar la columna que conserva esos tres y agrega el rotado en `(39,0)`. Este alcance afecta a la exploración opcional y debe considerarse al interpretar sus resultados. El algoritmo base no agrega estos cortes.
+
+## Inicialización actual y alternativa de Marcelo
+
+`InitialSliceGenerator.generate` es la inicialización activa. Construye rebanadas homogéneas para las alturas disponibles en las posiciones de cada orientación.
+
+`generate_initial_slices_greedy_uniform`, mediante `InitialSliceGenerator.generate_greedy_uniform`, implementa la alternativa incorporada en el commit `70250d5`. Construye filas homogéneas con pasos iguales al ancho y alto de cada orientación. Está disponible en el código, pero el orquestador actual no la llama; tampoco hay un selector CLI para activarla.
+
+La alternativa sólo cambia el pool inicial. No modifica `generate_positions_xym`, la definición de rebanada, el pricing ni el maestro. Puede omitir columnas ubicadas en alturas que sí están disponibles para pricing.
+
+Ejemplo verificado con `40 x 25 / 10 x 6`:
+
+| Inicialización | Cantidad de columnas | Alturas iniciales de columnas rotadas |
+|---|---:|---|
+| Actual | 10 | `0, 6, 10, 12` |
+| Greedy uniforme | 6 | `0, 10` |
+
+La posición rotada `(0,6)` sigue disponible en pricing. Una columna omitida puede recuperarse si el pricing la selecciona; su factibilidad no garantiza que sea atractiva para los duales ni que llegue al pool.
+
+En `50 x 20 / 13 x 8`, ambas inicializaciones producen las mismas tres columnas. En ese caso un rotado no puede comenzar en `y=8`, porque `8 + 13 > 20`. La reducción de seeds de la alternativa no explica ese caso concreto.
+
+## Diagnóstico del caso `50 x 20 / 13 x 8`
+
+### Identidad e historia
+
+La instancia tiene esperado `7` en [instances.py](../instances.py). Es `case7` en el catálogo y en [test_orchestrator.py](../tests/test_orchestrator.py), pero `case8` en [test_feasibility.py](../tests/test_feasibility.py). Las pruebas de factibilidad tienen un numerado propio; para relacionar resultados debe compararse la geometría, no sólo la etiqueta.
+
+La configuración histórica del commit `463d9fd`, cuyo mensaje describe el epsilon dinámico, ya contiene `50 x 20 / 13 x 8` con esperado `7`. Es evidencia de reutilización de la instancia bajo versiones posteriores. Un arreglo histórico no acredita su resultado en todas las versiones siguientes.
+
+El comportamiento `LP = 7 / IP = 6` se había observado con reconstrucción del maestro. El maestro incremental se incorporó en el commit `b2b4546`; ese cambio puede alterar la trayectoria de duales y columnas aun manteniendo la formulación del maestro.
+
+### Columna mixta de referencia
+
+Una columna útil es:
 
 ```text
 [(0,0,NR), (13,0,NR), (26,0,NR), (39,0,R)]
 ```
 
-### Verificaciones realizadas
+Es compatible con la columna superior de tres NR en `(0,8)`, `(13,8)` y `(26,8)`. Sus ubicaciones existen en pricing y la columna es factible si se fuerza.
 
-Se verificó que la rebanada mixta no está bloqueada por restricciones geométricas del esclavo:
-
-- las variables correspondientes existen en el pricing
-- la combinación es factible si se fuerza en el modelo esclavo
-- no hay un no-good cut que la elimine
-- al inicio tiene costo reducido positivo
-
-Con los duales iniciales del maestro relajado se observó:
+Con los duales iniciales verificados:
 
 ```text
-rebanada base de 3 NR: valor pricing = 0
-item rotado adicional en x = 39: coeficiente marginal = +1
-rebanada mixta completa: valor pricing = +1
+fila inferior de 3 NR: valor = 0
+rotado adicional en (39,0): aporte = +1
+columna mixta de 4: valor = +1
+mejor columna inicial devuelta por pricing: 5 rotados, valor = +5
 ```
 
-Por lo tanto, el cuarto ítem no tiene coeficiente negativo. La rebanada mixta domina a la rebanada de 3 desde el punto de vista del pricing.
+La mixta mejora a la fila de tres, pero no es la mejor columna para esos duales. No apareció entre las primeras 12 alternativas exploradas con los cortes implementados. Esa exploración acotada no prueba que nunca pueda aparecer.
 
-Sin embargo, la rebanada mixta no domina a todas las columnas posibles. El pricing encuentra antes muchas columnas con mayor valor reducido, especialmente columnas de 5 ítems o columnas de 4 ítems con otra geometría. Por eso la columna deseada no aparece en el pool.
+### Verificación del 8 de octubre de 2026
 
-### Rebanadas de 4 ítems
+Se utilizó CPLEX 22.1.1, con las heurísticas desactivadas. Las comprobaciones se realizaron en memoria, sin exportar gráficos ni cambiar el código. La comparación completa tuvo un límite externo de 45 segundos y límites de 5 segundos por resolución.
 
-El pricing sí puede generar rebanadas de 4 ítems y también puede generar rebanadas mixtas. El problema no es la cardinalidad ni la mezcla de orientaciones.
+Para comparar la reconstrucción se activó en memoria la ruta de respaldo existente en cada actualización; no se ejecutó un checkout histórico.
 
-Lo que no aparece es la rebanada de 4 específica que es compatible con la rebanada superior y permite construir la solución entera de `7`.
+| Comprobación | LP | IP | Columnas nuevas |
+|---|---:|---:|---:|
+| Pool inicial | 6 | 6 | 0 |
+| Pool inicial más la mixta de referencia | No medido | 7 | Incorporación manual |
+| Flujo incremental actual | 7 | 7 | 14 |
+| Reconstrucción en cada actualización | Aproximadamente 7 | 6 | 20 |
+| Pool anterior más la mixta de referencia | No medido | 7 | Incorporación manual |
 
-Esto indica que el problema no es:
+Los maestros enteros de estas comprobaciones finalizaron con estado CPLEX `101`. Se comprobó la geometría de las soluciones obtenidas. Son resultados observados en esas corridas, no garantías sobre futuras trayectorias.
+
+El flujo incremental obtuvo siete ítems con estas columnas:
 
 ```text
-"el pricing no genera mixtas"
+Inferior: [(0,0,NR), (13,0,R), (24,0,NR), (37,0,NR)]
+Superior: [(0,8,NR), (24,8,NR), (37,8,NR)]
 ```
 
-sino:
-
-```text
-"el pricing no rankea suficientemente alto la columna mixta útil para el entero"
-```
-
-### Efecto del corte por estancamiento
-
-Se probó aumentar el corte por estancamiento para permitir más iteraciones de generación de columnas. Con más iteraciones:
-
-- se generan más columnas
-- aparecen columnas de 4 ítems
-- el maestro relajado llega a valor `7`
-- el maestro entero final sigue en `6`
-
-Esto muestra que el pool generado alcanza para construir una solución fraccional de valor `7`, pero no contiene una combinación entera compatible de valor `7`.
-
-Cuando el maestro relajado llega a `7`, la rebanada mixta esperada ya tiene costo reducido `0`, por lo que el pricing estándar deja de tener incentivo para generarla.
-
-### Degeneración dual observada
-
-El hallazgo más importante es que los duales del maestro por celdas son altamente degenerados.
-
-En la primera iteración del caso analizado, los duales no nulos se concentraron en solo dos celdas:
-
-```text
-dual(0,0) = 3
-dual(0,8) = 3
-resto de las celdas = 0
-```
-
-Esto ocurre porque el maestro impone restricciones de no colisión por celda:
-
-```text
-para cada celda (x,y):
-sum rebanadas que ocupan (x,y) <= 1
-```
-
-Una rebanada ocupa muchas celdas, pero una solución dual extrema puede concentrar todo el precio de esa rebanada en una sola celda. Matemáticamente puede ser válido para la relajación, pero produce una señal pobre para el pricing.
-
-Con esos duales, el pricing interpreta:
-
-```text
-evitar la celda (0,0) es muy valioso
-el resto de las celdas no tiene costo
-```
-
-Esto penaliza columnas geométricamente útiles que tocan esa celda, como la rebanada mixta esperada, y favorece columnas desplazadas o con otra geometría que evitan la celda cara pero no necesariamente ayudan a la solución entera.
+La mixta de referencia no estaba en ese pool. Es útil para alcanzar siete, pero no es indispensable: otra disposición mixta puede ser compatible con otra columna superior.
 
 ### Interpretación
 
-El maestro actual cumple dos funciones:
+La comparación reproduce un pool con LP de valor siete e IP restringido óptimo de seis. Agregar la mixta aumenta el IP a siete, lo que acredita insuficiencia de ese pool. No se encontró un bloqueo geométrico de la mixta ni una incapacidad general del pricing para mezclar orientaciones.
 
-- selecciona rebanadas para maximizar la cantidad de ítems
-- asegura que no haya colisiones entre ítems de distintas rebanadas mediante restricciones por celda
+El éxito del flujo incremental en esta instancia no elimina la limitación general. La concentración dual y los desempates pueden influir en el pool; no se ha establecido que una de esas causas explique por sí sola todos los fallos.
 
-Esta formulación es geométricamente válida como un set packing por celdas, pero puede no estar bien alineada con generación de columnas. Los duales asociados a restricciones tan locales pueden ser muy degenerados y guiar al pricing hacia columnas buenas para la relajación lineal, pero no necesariamente útiles para la solución entera.
+## LP, entero restringido y benchmarks
 
-El caso evidencia una brecha entre:
+El maestro entero final sólo utiliza las columnas del pool generado. No se ejecuta pricing dentro de sus ramas: el programa no implementa branch-and-price.
 
-```text
-columnas con buen costo reducido para el maestro relajado
-```
+Un LP restringido de valor `40` y un IP restringido óptimo de `36`, frente a una referencia válida de `40`, puede indicar que las columnas alcanzan para una combinación fraccionaria pero faltan para una combinación entera. Columnas sin utilidad adicional para el LP pueden ser necesarias para el entero, como se explica en [Lübbecke y Desrosiers, sección 5.3.2](https://or.rwth-aachen.de/files/research/publications/cgsurvey.pdf).
 
-y:
+Antes de atribuir un caso a insuficiencia del pool se debe comprobar que el IP restringido realmente se resolvió óptimamente, que las columnas son factibles y que LP e IP se refieren al pool que se está analizando. Un incumbente inferior por timeout no basta para esa conclusión.
 
-```text
-columnas útiles para construir una solución entera compatible
-```
+En los seis CSV de resultados revisados el 8 de octubre no se encontró una fila con ambos objetivos numéricos que acreditara esa brecha en benchmarks. Varias filas tienen LP igual a la referencia e IP `NA` por timeout o interrupción. Esas filas documentan una corrida incompleta, no un IP numéricamente subóptimo. La interpretación de métricas y estados está en [benchmark_paver.md](benchmark_paver.md).
 
-### Líneas de trabajo posibles
+## Relación entre las líneas de trabajo
 
-Sin considerar el generador inicial como solución, las líneas relevantes son:
+| Ticket | Alcance y relación |
+|---|---|
+| A: definición de rebanada y casos problemáticos | Mantener la trazabilidad geométrica y distinguir un defecto de representación de la insuficiencia del pool entero. Actualizar la reproducción a la versión que se evalúa. |
+| B: inicialización alternativa | Comparar pools iniciales manteniendo posiciones, formulaciones y flags, salvo que Marcelo indique otro alcance. Puede influir en las columnas recuperadas posteriormente. |
+| C: benchmarks | Medir A y B, distinguiendo brecha numérica, resolución incompleta y coincidencia con la referencia. Puede ejecutarse antes de resolver los otros tickets. |
 
-- revisar la formulación del maestro, especialmente el uso de restricciones por celda como fuente de duales
-- estudiar estabilización o suavizado de duales para evitar precios extremadamente concentrados
-- analizar si conviene una formulación alternativa del maestro con restricciones menos locales o con una estructura de compatibilidad diferente
-- medir la degeneración dual en otros casos para confirmar si los fallos se correlacionan con duales concentrados
+Conviene mantenerlos separados por sus criterios de aceptación. C aporta evidencia para A y permite evaluar B; una observación pendiente de diagnóstico no exige bloquear toda la medición. Los casos detectados mediante gráficos deben vincularse con A cuando comparten una reproducción concreta.
 
-La conclusión actual es que el problema no parece ser que la columna faltante sea infactible o tenga costo reducido negativo. El problema parece estar en la señal dual inducida por el maestro por celdas y en cómo esa señal rankea las columnas dentro del pricing.
+Las decisiones pendientes de Marcelo son el alcance de la inicialización alternativa, el objetivo de calidad heurística o garantía de óptimo entero, el papel del enriquecimiento del pool y el presupuesto experimental reservado para el maestro entero. Las variantes de maestro, estabilización, enriquecimiento y branch-and-price son líneas de estudio; esta revisión documental no las implementa ni establece una solución elegida.

@@ -61,7 +61,8 @@ predeterminado es `overwrite`; `append` debe solicitarse explícitamente.
 No se escribe `ObjectiveValueEstimate`: el LP de CG no se declara como cota
 dual del problema original sin una justificación matemática adicional.
 
-Las métricas CG son: `lp_value` es el último RMP LP válido,
+Las métricas CG son: `lp_value` es el último RMP LP resuelto óptimamente y con
+objetivo válido; no acredita por sí solo la convergencia de CG.
 `restricted_integer_master` es el RMP entero final, `cg_iterations` incluye
 la iteración final sin columna mejorante, y `generated_columns` excluye seeds,
 duplicados y candidatos rechazados. `cg_time_s` excluye el master entero;
@@ -135,6 +136,64 @@ Los estados experimentales son `OPTIMAL`, `SUBOPTIMAL`,
 `REFERENCE_EXCEEDED`, `LP_FAIL`, `LP_OK_IP_FAIL`, `TIMEOUT_FEASIBLE`,
 `TIMEOUT_NO_SOLUTION` y `ERROR`. `OPTIMAL` solo significa coincidencia con
 la referencia de literatura, no una certificación PAVER.
+
+## Interpretar LP e IP restringidos
+
+El maestro LP se actualiza incrementalmente y se reconstruye si falla una
+actualización. El maestro entero final se construye desde el pool disponible
+al terminar CG. No genera columnas nuevas durante el árbol entero.
+
+`lp_value` corresponde al último pool resuelto como LP. Las columnas añadidas
+en una exploración opcional o justo antes de un corte pueden llegar al maestro
+entero sin otra resolución LP. Para diagnosticar una brecha sobre el mismo
+pool, comprobar también esa correspondencia. El runner de benchmarks fuerza
+`finalization_heuristics=False`, por lo que no ejecuta la exploración opcional.
+
+| Observación | Interpretación |
+|---|---|
+| LP coincide con la referencia e IP es `NA` | No se dispone de un entero; revisar terminación, fase alcanzada y `error_message`. |
+| LP coincide con la referencia y el incumbente IP es inferior | Hay una diferencia numérica; falta comprobar si el IP restringido se resolvió óptimamente. |
+| IP restringido probado óptimo e inferior a la referencia, con columnas válidas | El pool no expresa una solución entera de ese valor; revisar además la cobertura del espacio de soluciones y la formulación. |
+| IP coincide con una referencia válida y la geometría es factible | Coincide con el óptimo de referencia; el método general sigue sin garantizarlo para todas las instancias. |
+
+`LP_OK_IP_FAIL` significa que existe un valor LP pero no un objetivo entero;
+no significa «LP igual al óptimo de literatura e IP inferior». `SUBOPTIMAL`
+compara el incumbente con la referencia bajo terminación normal, pero no
+certifica que ese incumbente sea el óptimo del IP restringido. El gap queda
+`NA` cuando falta el objetivo entero; no debe completarse con cero ni con
+una estimación. El estado global de CG conserva también límites y errores
+anteriores, aunque el maestro entero final tenga una solución.
+
+Para declarar insuficiencia del pool, conservar la evidencia de optimalidad
+del maestro entero restringido y revisar la factibilidad de sus columnas.
+Para declarar convergencia LP, se requiere una prueba suficiente del pricing:
+un incumbente no positivo tras un límite, un duplicado o un corte heurístico
+no constituyen esa prueba.
+
+### Evidencia disponible al 8 de octubre de 2026
+
+Se revisaron `Results/benchmark.csv`, `benchmark_20260923.csv`,
+`benchmark_case_fix.csv`, `benchmark_test.csv`, `master_rebuild_before.csv` y
+`master_rebuild_after.csv`. No se encontró una fila con objetivos LP e IP
+numéricos que acreditara LP igual a la referencia e IP inferior. Hay filas
+con IP `NA` por timeout o interrupción. Por ejemplo, `IB_009` en
+`benchmark_test.csv` tiene LP `45`, referencia `45` e IP `NA`.
+
+Estos archivos están bajo `Results/`, ignorado por Git; su presencia y
+contenido corresponden a la revisión local fechada, no a fixtures permanentes.
+`benchmark_validation_baseline.csv` es un catálogo de entrada con campos de
+resultados vacíos, no una corrida que confirme una brecha.
+
+El caso `50 x 20 / 13 x 8` sí reprodujo LP aproximadamente `7` e IP restringido
+óptimo `6` mediante la ruta de reconstrucción, mientras el flujo incremental
+actual obtuvo `7/7`. La metodología y su alcance se detallan en
+[algorithm.md](algorithm.md#verificación-del-8-de-octubre-de-2026).
+
+Para nuevas comparaciones, registrar versión del código, dimensiones, flags,
+presupuesto temporal y terminación de cada fase. Reservar tiempo para el IP
+es una decisión del protocolo experimental: el runner actual comparte el
+límite de pared por instancia y puede agotarlo durante CG antes de resolver
+el maestro entero.
 
 ## Validación PAVER
 

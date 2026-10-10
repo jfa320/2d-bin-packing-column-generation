@@ -1,10 +1,14 @@
 # HOWTO --- Uso de PAVER para la comparativa de modelos de la tesina
 
-> **Implementación vigente:** consultar `docs/benchmark_paver.md` para el
-> formato actual de trazas, estados `TerminationStatus` y el runner de
-> benchmark. Las secciones históricas de este documento que muestran
-> `SolverStatus`, `Model1` sin distinguir rotación o tiempos redondeados no
-> describen el formato actual.
+> **Implementación vigente:** consultar [benchmark_paver.md](benchmark_paver.md)
+> para el formato actual de trazas, estados `TerminationStatus` y el runner de
+> benchmark, y [algorithm.md](algorithm.md) para el flujo incremental de CG y
+> el diagnóstico LP/IP actualizado. Las secciones históricas de este documento
+> que muestran `SolverStatus`, `Model1` sin distinguir rotación o tiempos
+> redondeados no describen el formato actual. Sus ejemplos con `caso*` deben
+> adaptarse a los identificadores `case*` del catálogo actual en `instances.py`.
+> Las tablas de ejemplo no constituyen evidencia de una corrida vigente;
+> un entero `NA` por límite o interrupción no demuestra una brecha LP/IP.
 
 > Documento de referencia para recordar qué es PAVER, cómo está
 > instalado actualmente, cómo generar un informe a partir de archivos

@@ -1,12 +1,12 @@
-# Bin Packing Bidimensional resuelto con generación de columnas
+# Empaquetado bidimensional monoítem con generación de columnas
 
-Este proyecto aborda el problema de Bin Packing Bidimensional (2D-BPP), donde se busca ubicar un conjunto de ítems rectangulares dentro de un bin rectangular evitando solapamientos entre ellos y respetando las dimensiones del bin. El objetivo es construir una disposición factible que empaquete la mayor cantidad posible de ítems, considerando posiciones válidas y, según el modelo utilizado, rotación de los ítems.
+Este proyecto estudia el Manufacturer's Pallet Loading Problem (MPLP): ubicar la mayor cantidad posible de ítems rectangulares idénticos en un único bin rectangular, sin solapamientos. El modelo principal permite rotación de 90°; los modelos de comparación incluyen variantes con y sin rotación.
 
 ## Contexto del proyecto
 
 Este repositorio contiene la implementación desarrollada en el marco de una tesina de grado para la culminación de la Licenciatura en Sistemas de la Universidad Nacional de General Sarmiento.
 
-El trabajo aborda el problema de Bin Packing Bidimensional mediante un enfoque de generación de columnas. El modelo principal se compone de un problema maestro de selección de rebanadas, un problema de pricing para generar nuevas rebanadas y una resolución entera final utilizando las columnas generadas.
+El trabajo aborda el empaquetado bidimensional monoítem mediante un enfoque de generación de columnas. El modelo principal se compone de un problema maestro de selección de rebanadas, un problema de pricing para generar nuevas rebanadas y una resolución entera final utilizando las columnas generadas.
 
 ## Enfoque del proyecto actual
 
@@ -16,7 +16,9 @@ La resolución se basa en generación de columnas. El problema se descompone en 
 - El modelo esclavo usa la información dual del maestro para generar nuevas rebanadas candidatas que puedan mejorar la solución actual.
 - El proceso se repite mientras aparezcan rebanadas nuevas con potencial de mejora. Al finalizar, el maestro se resuelve en versión entera con las columnas generadas.
 
-Para evitar ciclos o repeticiones, la implementación detecta rebanadas ya generadas y puede agregar restricciones de exclusión al modelo esclavo.
+El maestro LP se actualiza incrementalmente; si la actualización falla, se reconstruye desde el pool. El maestro entero final se construye de nuevo y utiliza únicamente las columnas generadas. Esta resolución no garantiza por sí sola el óptimo entero del problema original.
+
+Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. La inicialización greedy uniforme propuesta por Marcelo existe como alternativa, pero no está activa. Los detalles y el diagnóstico actualizado del caso `50 x 20 / 13 x 8` están en [`docs/algorithm.md`](docs/algorithm.md).
 
 ## Modelos implementados
 
@@ -35,6 +37,7 @@ Los modelos de comparación fueron adaptados a partir de formulaciones o enfoque
 .
 ├── main.py
 ├── config.py
+├── instances.py
 ├── models/
 ├── objects/
 ├── utils/
@@ -73,7 +76,7 @@ Activarlo en Windows PowerShell:
 Instalar dependencias:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Verificar que CPLEX esté disponible:
@@ -86,7 +89,7 @@ Nota: la dependencia `cplex` requiere una instalación válida de IBM ILOG CPLEX
 
 ## Ejecución de instancias
 
-Las instancias se configuran en [`config.py`](config.py). Cada instancia tiene un nombre propio (`caso2`, `caso7`, etc.) que se usa como `InputFileName` en el archivo `.trc` de PAVER.
+El catálogo de instancias está en [`instances.py`](instances.py), con acceso mediante `get_instance` en [`config.py`](config.py). Los identificadores son `case2`, `case7`, etc. y se usan como `InputFileName` en la traza PAVER. Ejecutar los comandos desde la raíz del repositorio.
 
 Para ejecutar el caso por defecto, alcanza con correr `main.py` directamente:
 
@@ -94,18 +97,18 @@ Para ejecutar el caso por defecto, alcanza con correr `main.py` directamente:
 python main.py
 ```
 
-El caso por defecto se define en `config.py` mediante `DEFAULT_CASE_NAME`.
+El caso por defecto es `case7`, definido por `DEFAULT_CASE_NAME` en `instances.py` y expuesto mediante `config.py`. `main.py` ejecuta los cinco modelos de `MODELS` para cada instancia; no tiene un selector de modelo individual.
 
 Para ejecutar una instancia puntual:
 
 ```bash
-python main.py --case caso7
+python main.py --case case7
 ```
 
 Para ejecutar varias instancias en una misma corrida:
 
 ```bash
-python main.py --cases caso2 caso4 caso7
+python main.py --cases case2 case4 case7
 ```
 
 Para ejecutar todas las instancias cargadas en el catálogo:
@@ -120,7 +123,7 @@ También se puede cambiar el tiempo límite por modelo:
 python main.py --cases case2 case4 case7 --time 1200
 ```
 
-La salida se guarda por defecto en `Results/output.trc`. Se puede cambiar el nombre del archivo con:
+El tiempo indicado es por modelo; no es un límite total de toda la corrida. La salida se guarda por defecto en `Results/output.trc`, sobrescribiendo la traza existente. `--append` agrega sólo combinaciones nuevas de instancia y modelo a una traza compatible. Se puede cambiar el nombre del archivo con:
 
 ```bash
 python main.py --case case7 --output output_case7.trc
@@ -140,10 +143,10 @@ disponible, se informa el error y se conserva la traza `.trc`.
 La estructura esperada para PAVER es una fila por combinación de instancia y modelo, por ejemplo:
 
 ```text
-caso2,Model5Orchestrator,...
-caso2,BacktrackingMonoitemExacto,...
-caso4,Model5Orchestrator,...
-caso4,BacktrackingMonoitemExacto,...
+case2,Model5Orchestrator,...
+case2,BacktrackingMonoitemExacto,...
+case4,Model5Orchestrator,...
+case4,BacktrackingMonoitemExacto,...
 ```
 
 ## Benchmark experimental
@@ -154,12 +157,10 @@ La ejecución del benchmark de generación de columnas está documentada en
 Desde la raíz del repositorio, ejecutar:
 
 ```powershell
-python benchmark_runner.py --input "benchmark.csv" --output "Results\benchmark.csv" --trace "Results\benchmark.trc" --time 300
+python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output "Results\benchmark.csv" --trace "Results\benchmark.trc" --time 300
 ```
 
-El runner procesa todas las filas que existan en el CSV de entrada. Por lo
-tanto, si el archivo contiene 77 instancias, ejecuta 77 instancias. El
-parámetro `--time` define el límite en segundos para cada instancia.
+El runner procesa todas las filas del CSV de entrada y ejecuta sólo generación de columnas con `finalization_heuristics=False`. El parámetro `--time` define el límite de pared compartido por CG y el maestro entero para cada instancia. Un entero `NA` por timeout o interrupción no acredita una solución entera subóptima.
 Al finalizar, ejecuta PAVER usando la ruta configurada en `paver.properties`.
 El informe queda en `Results\benchmark_paver\index.html` cuando la traza se
 llama `Results\benchmark.trc`.
@@ -169,7 +170,7 @@ Para generar solamente el CSV y la traza se puede usar `--no-paver`.
 `--expected-count` es opcional y solo permite verificar una cantidad esperada:
 
 ```powershell
-python benchmark_runner.py --input "benchmark.csv" --expected-count 77 --time 300
+python benchmark_runner.py --input "benchmark_validation_baseline.csv" --expected-count 30 --time 300
 ```
 
 El CSV experimental se escribe en `Results\benchmark.csv` y la traza
@@ -178,9 +179,20 @@ de salida nuevos para cada corrida.
 
 ## Ejecución de pruebas
 
+Comprobaciones rápidas sin resolver modelos:
+
 ```bash
-pytest
+python -m pytest tests/test_config.py
 ```
+
+Pruebas puntuales con CPLEX:
+
+```bash
+python -m pytest "tests/test_orchestrator.py::test_orchestrator_cases[case1]"
+python -m pytest "tests/test_feasibility.py::test_orchestrator_solution_is_feasible[case1]"
+```
+
+La suite completa se ejecuta con `python -m pytest`. Incluye resoluciones reales de CPLEX y casos grandes. Usar un límite externo de pared para verificaciones con solver: las pruebas que llaman directamente al orquestador no pasan por el monitor de su proceso hijo.
 
 ## Algoritmo
 
