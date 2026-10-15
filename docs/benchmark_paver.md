@@ -1,7 +1,7 @@
 # Benchmark y trazas PAVER
 
 La ejecución devuelve `ExecutionResult`; generación de columnas agrega
-`ColumnGenerationMetrics`. Los códigos crudos de CPLEX permanecen en
+`ColumnGenerationMetrics` y `ColumnGenerationDiagnostics`. Los códigos crudos de CPLEX permanecen en
 `raw_cplex_status` y nunca se escriben como estados PAVER.
 
 ## Estados
@@ -34,9 +34,10 @@ La ejecución devuelve `ExecutionResult`; generación de columnas agrega
 | 132 | TimeLimit | 9 |
 | 133 | Other | 13 |
 
-Los estados LP también se traducen en el mismo módulo. `ModelStatus=1` se
-usa solo para una optimalidad global probada por el algoritmo. Una solución
-entera factible sin esa prueba usa `8`.
+Los estados LP también se traducen en el mismo módulo. `ModelStatus=1` indica
+optimalidad probada del problema resuelto. En los campos de fase se refiere a
+ese LP, pricing o entero restringido; no certifica optimalidad del packing
+original. El resultado global de CG conserva `8` para un entero factible.
 
 Para estados LP, el mapeo implementado es: `1 -> Normal/1`, `2 ->
 Normal/18`, `3 -> Normal/4`, `4 -> Normal/12`, `5 -> Normal/6`, `6 ->
@@ -67,6 +68,146 @@ objetivo válido; no acredita por sí solo la convergencia de CG.
 la iteración final sin columna mejorante, y `generated_columns` excluye seeds,
 duplicados y candidatos rechazados. `cg_time_s` excluye el master entero;
 `total_time_s` incluye setup, CG, master entero y overhead.
+
+### Tiempos por fase y diagnóstico CG
+
+El CSV resumido, predeterminado, tiene 24 columnas: conserva las primeras 18
+y agrega `master_lp_time_s`, `pricing_time_s`, `cg_stop_reason`,
+`lp_convergence_proven`, `interrupted_phase` e `integer_master_model_status`.
+El estado del entero permite distinguir un óptimo del pool (`1`) de un
+incumbente factible (`8`), independientemente de la comparación con literatura.
+
+Cada corrida genera además dos archivos junto al CSV principal. Para
+`Results/benchmark.csv`, son `Results/benchmark_iterations.csv` y
+`Results/benchmark_phases.csv`. También se generan en modo `--no-paver`.
+Las colisiones y la confirmación de sobrescritura incluyen los tres archivos.
+
+`--detailed-csv` exporta las 44 columnas, con códigos crudos, estados de
+segunda fase y reintentos, y evidencia de convergencia. La traza PAVER conserva
+sus ocho columnas. El resultado estructurado mantiene siempre todo el detalle.
+
+| Tiempo | Alcance |
+|---|---|
+| `master_lp_time_s` | Construcción inicial, actualizaciones incrementales, reconstrucciones de respaldo, resoluciones LP y extracción de duales, acumuladas. |
+| `pricing_time_s` | Construcción, restricciones adicionales, resoluciones y mapeo de soluciones de todos los pricing; incluye segunda fase y reintentos heurísticos. |
+| `integer_master_time_s` | Construcción y resolución del entero final sobre el pool generado. |
+| `cg_time_s` | Preparación del hijo, maestro LP, pricing y trabajo restante del ciclo; excluye el entero final y la exportación del layout. |
+| `total_time_s` | Tiempo de pared de la llamada completa, incluidos creación del proceso, exportación y cierre. |
+
+Los tiempos no se redondean internamente; el CSV muestra seis decimales.
+En un corte externo, el padre extiende el último snapshot hasta el momento
+de corte y atribuye ese intervalo a la fase activa según el último snapshot
+recibido. El tiempo de cierre del
+proceso solo incrementa el total. Si el hijo sale inesperadamente, se
+conservan los tiempos del último snapshot recibido, sin inventar el instante
+de salida. `snapshot_time_s` y `active_phase` son datos internos de seguimiento.
+
+`cg_stop_reason` identifica el motivo de cierre de generación:
+
+| Motivo | Significado |
+|---|---|
+| `pricing_converged` | Hay evidencia suficiente del pricing principal para cerrar el LP del universo de columnas considerado. |
+| `pricing_nonpositive_unproven` | El valor devuelto no es positivo, pero falta una prueba suficiente. |
+| `duplicate` | Se devuelve una columna duplicada y no se incorpora una alternativa. |
+| `stagnation` | Actúa el criterio heurístico de estancamiento. |
+| `lp_failure` / `lp_limit` | Falta un LP con objetivo y duales utilizables, por fallo o límite. |
+| `pricing_no_solution` / `pricing_limit` | El pricing no devuelve una solución utilizable o se corta por límite sin demostrar cierre. |
+| `pricing_no_column` | Hay objetivo positivo pero falta una columna utilizable. |
+| `wall_clock_timeout` / `user_interrupt` / `child_exit` / `error` | La generación se interrumpe antes de registrar otro motivo de cierre. |
+
+Un timeout posterior en el entero o la exportación conserva el motivo por el
+que terminó CG. `interrupted_phase` identifica la última fase con límite o
+error: `setup`, `preparation`, `master_lp`, `pricing`, `cg_overhead`,
+`integer_master` o `layout_export`. `runner` indica una excepción capturada
+por el runner sin un resultado estructurado del solver.
+
+`lp_convergence_proven` se escribe como `True` o `False`; `False` significa
+que no se registró una prueba, no que se haya demostrado falta de convergencia.
+Requiere un LP válido y óptimo, y pricing principal con los duales originales.
+En modo detallado, `convergence_basis` es `optimal_pricing` cuando el pricing fue probado óptimo
+con objetivo <= `EPS`, o `pricing_upper_bound` cuando una cota superior finita
+es <= `EPS`. La cota puede acreditar cierre aunque el solver haya terminado
+por límite; ese límite sigue registrado en el estado global. Se rechazan
+cotas no disponibles, infinitas, sentinelas de CPLEX y estados numéricamente
+inválidos. La segunda fase y los pricing con exclusiones no aportan esta
+prueba. `pricing_objective` y `pricing_best_bound` conservan la evidencia del
+último pricing principal; no son cotas del packing original.
+
+En modo detallado, cada prefijo `lp`, `pricing`, `pricing_phase2`, `auxiliary_pricing`,
+`auxiliary_pricing_phase2` e `integer_master` tiene tres columnas:
+`*_model_status`, `*_termination_status` y `*_raw_cplex_status`. Describen
+la última resolución completada y reportada de cada tipo. Los reintentos y
+la segunda fase no sobrescriben el pricing principal. Una fase nunca
+reportada se escribe como `NA`; si el padre interrumpe una resolución en
+curso, sus códigos anteriores siguen refiriéndose a la última resolución
+reportada y `interrupted_phase` informa el corte actual.
+
+### Registro por iteración
+
+`*_iterations.csv` contiene una fila por intento del ciclo maestro LP/pricing,
+con numeración propia desde 1. Incluye intentos fallidos o interrumpidos;
+por eso la cantidad de filas puede superar `cg_iterations`, que conserva su
+definición histórica. La construcción inicial del maestro corresponde a la
+primera fila. Las posiciones y columnas iniciales se preparan antes de esa fila.
+
+| Campo del registro | Significado |
+|---|---|
+| `master_build_time_s` | Construcción inicial, actualización incremental, reconstrucción de respaldo y preparación del tipo de problema LP. |
+| `master_solve_time_s` | Tiempo de las llamadas a `model.solve()` del maestro LP; excluye extracción de duales, estados y solución. |
+| `pricing_build_time_s` | Construcción del pricing, restricciones de exclusión y preparación del objetivo/restricción de su segunda fase. |
+| `pricing_solve_time_s` | Tiempo de todas las llamadas a `model.solve()` del pricing en ese intento, incluidas segunda fase y alternativas. |
+| `master_lp_time_s` / `pricing_time_s` | Totales de fase: incluyen los componentes anteriores y postprocesamiento/bookkeeping; no son solo solve. |
+| `iteration_time_s` | Tiempo de pared del intento, incluido el trabajo entre fases. Excluye el entero final. |
+| `pool_before` / `pool_after` | Tamaño total del pool al comienzo y al final; incluye las columnas iniciales. |
+| `generated_columns` | Columnas aceptadas durante ese intento, excluyendo seeds y duplicados. |
+| `lp_value`, `pricing_objective`, `pricing_best_bound` | Valores reportados en ese intento; un LP/pricing que no se ejecutó no hereda valores de la fila anterior. |
+| `pricing_calls` / `pricing_phase2_calls` | Intentos de solve de primera fase (principal y auxiliares) y de segunda fase, respectivamente. |
+| `completed` | `True` si hubo un par LP/pricing utilizable y el intento cerró sin error ni corte externo. No acredita convergencia ni optimalidad. |
+| `stop_reason` | `column_added`, `alternative_column_added`, motivo de cierre CG o interrupción/error de esa fila. |
+
+Los estados LP, pricing principal, segunda fase y auxiliares se registran
+independientemente para cada intento. Si falla la segunda fase antes de
+reportar un estado CPLEX, se informa `Error/13` con código crudo `NA`; si falla
+el postprocesamiento después de reportarlo, se conserva ese estado y la fila
+queda incompleta/con error. Los contadores de llamadas incluyen solves que
+terminan con excepción; una preparación fallida antes del solve no suma una
+llamada.
+
+Un solve que devuelve un incumbente al alcanzar un límite puede producir una
+fila `completed=True`: el intento del ciclo terminó con datos utilizables,
+pero sus estados siguen indicando el límite. Un corte externo durante la
+fila produce `completed=False`.
+
+Al interrumpir el hijo, el padre conserva las filas cerradas y finaliza una
+fila parcial con `completed=False`. Los tiempos parciales de fase y componente
+se estiman desde el último checkpoint recibido: pueden incluir el intervalo
+de publicación previo al comienzo efectivo del componente. Los tiempos de
+componentes completados excluyen la publicación del checkpoint. El costo de
+cerrar el proceso no se atribuye a la fila ni a las fases.
+
+El transporte envía cada fila cerrada una vez y solo la fila activa en los
+snapshots. No reenvía el historial entero por cada actualización. La API CG
+permite `record_iterations=False` para comparar el costo adicional del historial;
+el runner registra las iteraciones por defecto y mantiene siempre los tiempos.
+
+### Totales y porcentajes por instancia
+
+`*_phases.csv` contiene una fila por instancia, con los seis acumulados
+`master_lp`, `pricing`, `master_build`, `master_solve`, `pricing_build` y
+`pricing_solve`, además de los denominadores `total_time_s` y `cg_time_s`.
+Para cada acumulado exporta:
+
+- `*_percent_total = 100 * componente / total_time_s`.
+- `*_percent_cg = 100 * componente / cg_time_s`.
+
+Un denominador no positivo se escribe como `NA`. Los agregados maestro/pricing
+contienen sus componentes: sus porcentajes no deben sumarse con los de build
+y solve. El resto de CG corresponde a preparación general y bookkeeping.
+`iteration_records` indica filas registradas, distinto del contador histórico
+`cg_iterations` cuando existe un intento parcial o fallido.
+
+La validación del costo del registro y sus límites de interpretación se
+documenta en [instrumentation_validation.md](instrumentation_validation.md).
 
 ## Ejecución
 
@@ -111,6 +252,12 @@ Benchmark:
 
 ```text
 python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output Results/benchmark.csv --trace Results/benchmark.trc --time 1200
+```
+
+Para obtener el CSV completo de diagnóstico, agregar `--detailed-csv`:
+
+```text
+python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output Results/benchmark_detallado.csv --time 1200 --detailed-csv --no-paver
 ```
 
 El runner ejecuta todas las filas que existan en el CSV, ejecuta solamente CG
@@ -167,7 +314,7 @@ anteriores, aunque el maestro entero final tenga una solución.
 Para declarar insuficiencia del pool, conservar la evidencia de optimalidad
 del maestro entero restringido y revisar la factibilidad de sus columnas.
 Para declarar convergencia LP, se requiere una prueba suficiente del pricing:
-un incumbente no positivo tras un límite, un duplicado o un corte heurístico
+un incumbente no positivo tras un límite sin cota suficiente, un duplicado o un corte heurístico
 no constituyen esa prueba.
 
 ### Evidencia disponible al 8 de octubre de 2026

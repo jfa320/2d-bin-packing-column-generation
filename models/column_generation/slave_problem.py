@@ -5,6 +5,9 @@ legacy functions at the bottom preserve the original public API.
 """
 
 import cplex
+import math
+from numbers import Real
+from utils.cg_instrumentation import timed_component
 
 from config import USE_PRACTICAL_CG_ENHANCEMENTS
 from objects import Item, Slice
@@ -212,7 +215,8 @@ class SlaveSolver:
     def solve(self, model, queue, manual_interruption, bin_width, item_height,
               item_width, slice_height, finalization_heuristics=None):
         del manual_interruption
-        model.solve()
+        with timed_component(queue, "pricing_solve", pricing_stage="primary"):
+            model.solve()
         if not self._report_status(model, queue):
             return None, None, []
 
@@ -234,21 +238,26 @@ class SlaveSolver:
         if not enhancements:
             return phase_1_slice, phase_1_objective, phase_1_active
 
+        phase_2_reported = False
         try:
-            model.linear_constraints.add(
-                lin_expr=[cplex.SparsePair(ind=names, val=linear_objective)],
-                senses=["G"],
-                rhs=[phase_1_objective - self.EPS_SECOND_PHASE],
-                names=["consMaintainOriginalObjective"],
-            )
-            model.objective.set_linear([(name, 0.0) for name in names])
-            model.objective.set_linear([
-                (name, 1.0) for name in names
-                if name.startswith("z_x_") or name.startswith("z_y_")
-            ])
-            model.objective.set_sense(model.objective.sense.maximize)
-            model.solve()
-            if self._report_status(model, queue):
+            with timed_component(queue, "pricing_build"):
+                model.linear_constraints.add(
+                    lin_expr=[cplex.SparsePair(ind=names, val=linear_objective)],
+                    senses=["G"],
+                    rhs=[phase_1_objective - self.EPS_SECOND_PHASE],
+                    names=["consMaintainOriginalObjective"],
+                )
+                model.objective.set_linear([(name, 0.0) for name in names])
+                model.objective.set_linear([
+                    (name, 1.0) for name in names
+                    if name.startswith("z_x_") or name.startswith("z_y_")
+                ])
+                model.objective.set_sense(model.objective.sense.maximize)
+            with timed_component(queue, "pricing_solve", pricing_stage="phase2"):
+                model.solve()
+            phase_2_feasible = self._report_status(model, queue, pricing_stage="phase2")
+            phase_2_reported = True
+            if phase_2_feasible:
                 phase_2 = self.solution_mapper.map_solution(
                     model, bin_width, item_height, item_width, slice_height
                 )
@@ -264,21 +273,50 @@ class SlaveSolver:
                     ):
                         return phase_2_slice, phase_1_objective, phase_2_active
         except Exception as error:
-            queue.put({"phase": "pricing", "error": str(error)})
+            queue.put({"phase": "pricing", "pricing_stage": "phase2", "error": str(error),
+                       "solve_reported": phase_2_reported})
 
         return phase_1_slice, phase_1_objective, phase_1_active
 
     @staticmethod
-    def _report_status(model, queue):
+    def _report_status(model, queue, pricing_stage="primary"):
         raw_status = model.solution.get_status()
         reported_feasible = model.solution.is_primal_feasible()
         state = map_cplex_mip_status(
             raw_status, has_feasible_solution=reported_feasible
         )
+        objective = None
+        best_bound = None
+        if pricing_stage == "primary":
+            if state.has_feasible_solution:
+                try:
+                    objective = SlaveSolver._finite_value(model.solution.get_objective_value())
+                except Exception:
+                    # Report the completed solve even if objective extraction fails.
+                    # The caller still extracts the objective under the existing contract.
+                    pass
+            if state.model_status == PAVER.MODEL_STATUS_OPTIMAL:
+                best_bound = objective
+            elif (state.model_status in {PAVER.MODEL_STATUS_FEASIBLE, PAVER.MODEL_STATUS_NO_SOLUTION}
+                  and state.termination_status != PAVER.TERMINATION_ERROR):
+                try:
+                    best_bound = SlaveSolver._finite_value(model.solution.MIP.get_best_objective())
+                except Exception:
+                    # Missing telemetry must not change pricing's feasible-column contract.
+                    pass
         queue.put({
-            "phase": "pricing", "raw_status": raw_status, "state": state
+            "phase": "pricing", "pricing_stage": pricing_stage,
+            "raw_status": raw_status, "state": state,
+            "objective": objective, "best_bound": best_bound,
         })
         return state.has_feasible_solution
+
+    @staticmethod
+    def _finite_value(value):
+        if (isinstance(value, Real) and not isinstance(value, bool)
+                and math.isfinite(value) and abs(value) < cplex.infinity):
+            return float(value)
+        return None
 
 
 _MODEL_BUILDER = SlaveModelBuilder()

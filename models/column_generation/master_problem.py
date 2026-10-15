@@ -5,6 +5,7 @@ responsibilities are split into model construction, solving and dual mapping.
 """
 
 import cplex
+from utils.cg_instrumentation import timed_component
 
 from utils.cplex_helpers import add_constraint, add_constraint_set, add_variables
 from utils.paver_constants import PaverConstants
@@ -162,11 +163,13 @@ class MasterSolver:
 
     def solve(self, model, queue, manual_interruption, relax_model, initial_time):
         del manual_interruption, initial_time
-        model.set_problem_type(
-            cplex.Cplex.problem_type.LP
-            if relax_model else cplex.Cplex.problem_type.MILP
-        )
-        model.solve()
+        with timed_component(queue, "master_build"):
+            model.set_problem_type(
+                cplex.Cplex.problem_type.LP
+                if relax_model else cplex.Cplex.problem_type.MILP
+            )
+        with timed_component(queue, "master_solve"):
+            model.solve()
         raw_status = model.solution.get_status()
         reported_feasible = model.solution.is_primal_feasible()
         mapper = map_cplex_lp_status if relax_model else map_cplex_mip_status

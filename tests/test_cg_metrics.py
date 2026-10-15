@@ -24,6 +24,8 @@ def stub_run(monkeypatch):
     seed = make_slice(0)
     monkeypatch.setattr(cg, "generate_initial_slices", lambda *args: [seed])
     monkeypatch.setattr(cg, "export_final_layout", lambda *args: None)
+    monkeypatch.setattr(cg, "add_no_good_cut", lambda *args: None)
+    monkeypatch.setattr(cg, "add_non_empty_constraint", lambda *args: None)
     master_builds = []
     incremental_updates = []
 
@@ -52,7 +54,8 @@ def stub_run(monkeypatch):
     lp_values = iter([1.5, 2.5, 3.5])
 
     def master(model, queue, manual, relaxed, initial):
-        clock[0] += 2
+        with cg.timed_component(queue, "master_solve"):
+            clock[0] += 2
         value = next(lp_values) if relaxed else 2
         queue.put({"phase": "lp" if relaxed else "ip", "objective": value,
                    "state": map_cplex_lp_status(1) if relaxed else map_cplex_mip_status(101),
@@ -61,22 +64,27 @@ def stub_run(monkeypatch):
 
     monkeypatch.setattr(cg, "solve_master_model", master)
 
-    def run(pricing, **kwargs):
+    def run(pricing, pricing_raw_status=101, pricing_best_bound=None, **kwargs):
         responses = iter(pricing)
 
         def slave(model, queue, manual, *args, finalization_heuristics=None):
-            clock[0] += 2
-            queue.put({"phase": "pricing", "raw_status": 101,
-                       "state": map_cplex_mip_status(101)})
-            return next(responses)
+            with cg.timed_component(queue, "pricing_solve"):
+                clock[0] += 2
+                response = next(responses)
+            queue.put({"phase": "pricing", "raw_status": pricing_raw_status,
+                       "state": map_cplex_mip_status(pricing_raw_status),
+                       "objective": response[1], "best_bound": (
+                           response[1] if pricing_raw_status == 101 else pricing_best_bound)})
+            return response
 
         monkeypatch.setattr(cg, "solve_slave_model", slave)
         return cg.orchestrator(Queue(), SimpleNamespace(value=True), 60, 0,
                                ConfigData(4, 4, 1, 1), return_structured=True,
-                               finalization_heuristics=False, **kwargs)
+                               finalization_heuristics=kwargs.pop("finalization_heuristics", False), **kwargs)
 
     run.master_builds = master_builds
     run.incremental_updates = incremental_updates
+    run.clock = clock
     return run
 
 
@@ -88,6 +96,14 @@ def test_completed_iterations_and_phase_metrics(stub_run):
     assert result.metrics.restricted_integer_master == 2
     assert result.metrics.cg_time_s == 11
     assert result.metrics.integer_master_time_s == 3
+    assert result.metrics.master_lp_time_s == 5
+    assert result.metrics.pricing_time_s == 6
+    assert result.diagnostics.cg_stop_reason == "pricing_converged"
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.convergence_basis == "optimal_pricing"
+    assert result.diagnostics.lp_status.raw_cplex_status == 1
+    assert result.diagnostics.pricing_status.raw_cplex_status == 101
+    assert result.diagnostics.integer_master_status.model_status == 1
     assert result.execution.total_time_s == 14
     assert result.execution.objective_value == 2
     assert result.execution.model_status == 8
@@ -134,6 +150,7 @@ def test_failed_incremental_update_rebuilds_master(stub_run, monkeypatch, capsys
     assert result.execution.objective_value == 2
     assert result.metrics.cg_iterations == 2
     assert result.metrics.generated_columns == 1
+    assert result.metrics.master_lp_time_s == 6
     assert len(builds) == 3  # Initial LP, fallback LP, final integer master.
     assert builds[1][1] == (make_slice(0).get_id(), generated.get_id())
     assert relaxed_solves == [builds[0][0], builds[1][0]]
@@ -151,6 +168,8 @@ def test_seed_duplicate_not_counted(stub_run, monkeypatch):
     assert result.metrics.cg_iterations == 1
     assert result.execution.termination_status == "Normal"
     assert cg.USE_PRACTICAL_CG_ENHANCEMENTS is True
+    assert result.diagnostics.cg_stop_reason == "duplicate"
+    assert not result.diagnostics.lp_convergence_proven
 
 
 def test_explicit_false_disables_dual_stabilization(stub_run, monkeypatch):
@@ -165,6 +184,7 @@ def test_failed_pricing_is_not_completed_iteration(stub_run):
     result = stub_run([(None, None, [])])
     assert result.metrics.cg_iterations == 0
     assert result.metrics.generated_columns == 0
+    assert result.diagnostics.cg_stop_reason == "pricing_no_solution"
 
 
 def test_error_keeps_last_lp_not_integer(stub_run):
@@ -389,6 +409,9 @@ def test_parent_deadline_drains_partial_results(monkeypatch, incumbent):
 
     process = Mock()
     process.is_alive.return_value = True
+    def shutdown_delay(*args):
+        clock[0] += 1.0
+    process.join.side_effect = shutdown_delay
     monkeypatch.setattr(cg.multiprocessing, "Queue", StubQueue)
     monkeypatch.setattr(cg.multiprocessing, "Process", lambda **kwargs: process)
     result = cg.execute_with_time_limit(0.2, {"case_name": "stub", "bin_width": 4,
@@ -398,6 +421,9 @@ def test_parent_deadline_drains_partial_results(monkeypatch, incumbent):
     assert result.metrics.lp_value == 2.5
     assert result.metrics.cg_iterations == 3
     assert result.execution.total_time_s >= 0.2
+    assert result.metrics.cg_time_s == pytest.approx(0.2)
+    assert result.diagnostics.interrupted_phase == "preparation"
+    assert result.diagnostics.cg_stop_reason == "wall_clock_timeout"
     process.terminate.assert_called()
 
 
@@ -417,8 +443,11 @@ def test_child_exception_before_first_solve_is_reported(monkeypatch):
     assert result.execution.error_message == "bad positions"
     assert result.execution.objective_value is None
     assert result.metrics.cg_iterations == 0
+    assert queue.get_nowait().diagnostics.active_phase == "preparation"
     assert queue.get_nowait().execution.termination_status == "Error"
     assert queue.get_nowait()["finished"] is True
+    assert result.diagnostics.cg_stop_reason == "error"
+    assert result.diagnostics.interrupted_phase == "preparation"
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -445,3 +474,475 @@ def test_phase_times_are_not_rounded(monkeypatch):
     result = progress.result()
     assert result.execution.total_time_s == 1.123456789 - 1.0
     assert result.metrics.cg_time_s == result.execution.total_time_s
+
+
+@pytest.mark.parametrize("bound,proven,reason", [
+    (None, False, "pricing_limit"),
+    (1.0, False, "pricing_limit"),
+    (0.0, True, "pricing_converged"),
+])
+def test_nonpositive_limited_pricing_requires_a_bound(stub_run, bound, proven, reason):
+    result = stub_run([(None, 0.0, [])], pricing_raw_status=107, pricing_best_bound=bound)
+    assert result.diagnostics.lp_convergence_proven is proven
+    assert result.diagnostics.cg_stop_reason == reason
+    assert result.diagnostics.pricing_status.raw_cplex_status == 107
+    assert result.diagnostics.integer_master_status.raw_cplex_status == 101
+    assert result.execution.termination_status == "TimeLimit"
+    assert result.diagnostics.interrupted_phase == "pricing"
+
+
+@pytest.mark.parametrize("kind,original_duals", [("main", False), ("extra", True)])
+def test_modified_pricing_cannot_certify_convergence(kind, original_duals):
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    progress.put({"phase": "lp", "state": map_cplex_lp_status(1),
+                  "raw_status": 1, "objective": 2.5})
+    progress.start_phase("pricing", pricing_kind=kind, original_duals=original_duals)
+    progress.put({"phase": "pricing", "state": map_cplex_mip_status(101),
+                  "raw_status": 101, "objective": 0.0, "best_bound": 0.0})
+    assert not progress.result().diagnostics.lp_convergence_proven
+
+
+def test_second_phase_and_retries_do_not_overwrite_primary_evidence():
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    progress.put({"phase": "lp", "state": map_cplex_lp_status(1),
+                  "raw_status": 1, "objective": 2.5})
+    progress.start_phase("pricing")
+    progress.put({"phase": "pricing", "state": map_cplex_mip_status(101),
+                  "raw_status": 101, "objective": 0.0, "best_bound": 0.0})
+    progress.put({"phase": "pricing", "pricing_stage": "phase2",
+                  "state": map_cplex_mip_status(107), "raw_status": 107})
+    progress.end_phase()
+    progress.start_phase("pricing", pricing_kind="extra", original_duals=False)
+    progress.put({"phase": "pricing", "state": map_cplex_mip_status(105), "raw_status": 105})
+    progress.put({"phase": "pricing", "pricing_stage": "phase2",
+                  "state": map_cplex_mip_status(102), "raw_status": 102})
+    diagnostics = progress.result().diagnostics
+    assert diagnostics.pricing_status.raw_cplex_status == 101
+    assert diagnostics.pricing_phase2_status.raw_cplex_status == 107
+    assert diagnostics.auxiliary_pricing_status.raw_cplex_status == 105
+    assert diagnostics.auxiliary_pricing_phase2_status.raw_cplex_status == 102
+    assert diagnostics.lp_convergence_proven
+    assert diagnostics.pricing_objective == diagnostics.pricing_best_bound == 0.0
+    assert progress.result().execution.termination_status == "TimeLimit"
+
+
+def test_second_phase_optimum_cannot_supply_primary_proof():
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    progress.put({"phase": "lp", "state": map_cplex_lp_status(1),
+                  "raw_status": 1, "objective": 2.5})
+    progress.start_phase("pricing")
+    progress.put({"phase": "pricing", "state": map_cplex_mip_status(107),
+                  "raw_status": 107, "objective": 0.0, "best_bound": 1.0})
+    progress.put({"phase": "pricing", "pricing_stage": "phase2",
+                  "state": map_cplex_mip_status(101), "raw_status": 101,
+                  "objective": 0.0, "best_bound": 0.0})
+    assert not progress.result().diagnostics.lp_convergence_proven
+    progress.start_phase("pricing")
+    assert progress.result().diagnostics.pricing_best_bound is None
+
+
+def test_extra_pricing_time_and_status_are_included(stub_run):
+    result = stub_run([(make_slice(1), 0.0, ["z_x_1_0"]), (None, None, [])],
+                      finalization_heuristics=True)
+    assert result.metrics.pricing_time_s == 6
+    assert result.metrics.master_lp_time_s == 3
+    assert result.diagnostics.cg_stop_reason == "pricing_converged"
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.auxiliary_pricing_status.raw_cplex_status == 101
+
+
+def test_duplicate_retry_time_is_included(stub_run):
+    result = stub_run([(make_slice(0), 1.0, ["z_x_0_0"]), (None, 0.0, [])],
+                      finalization_heuristics=True)
+    assert result.metrics.pricing_time_s == 6
+    assert result.diagnostics.cg_stop_reason == "duplicate"
+    assert not result.diagnostics.lp_convergence_proven
+
+
+def test_stagnation_has_its_own_stop_reason(stub_run, monkeypatch):
+    monkeypatch.setattr(cg, "MAX_STAGNATION", 0)
+    result = stub_run([(make_slice(1), 1.0, ["z_x_1_0"])], finalization_heuristics=True)
+    assert result.diagnostics.cg_stop_reason == "stagnation"
+    assert not result.diagnostics.lp_convergence_proven
+
+
+@pytest.mark.parametrize("phase,field", [
+    ("master_lp", "master_lp_time_s"), ("pricing", "pricing_time_s"),
+    ("integer_master", "integer_master_time_s"),
+])
+def test_interrupted_phase_accounts_only_until_cutoff(monkeypatch, phase, field):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    if phase == "integer_master":
+        progress.ip_started = 0.0
+        progress.stop_cg("duplicate")
+    progress.start_phase(phase)
+    clock[0] = 1.25
+    snapshot = progress.result()
+    clock[0] = 9.0  # Parent shutdown happens later than the 4s cutoff.
+    result = cg._account_interruption(snapshot, 4.0, "wall_clock_timeout")
+    assert getattr(snapshot.metrics, field) == 1.25
+    assert getattr(result.metrics, field) == 4.0
+    assert result.diagnostics.interrupted_phase == phase
+    assert result.diagnostics.cg_stop_reason == ("duplicate" if phase == "integer_master"
+                                                else "wall_clock_timeout")
+    assert result.metrics.cg_time_s == (0.0 if phase == "integer_master" else 4.0)
+
+
+def test_preparation_and_export_are_excluded_from_solver_phase_times(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    clock[0] = 2.0
+    progress.start_phase("master_lp")
+    clock[0] = 5.0
+    progress.end_phase()
+    progress.ip_started = 5.0
+    progress.metrics.cg_time_s = 5.0
+    progress.start_phase("integer_master")
+    clock[0] = 6.0
+    progress.end_phase()
+    progress.finished = True
+    progress.start_phase("layout_export")
+    clock[0] = 16.0
+    progress.finish()
+    result = progress.result()
+    assert result.metrics.master_lp_time_s == 3.0
+    assert result.metrics.pricing_time_s == 0.0
+    assert result.metrics.integer_master_time_s == 1.0
+    assert result.metrics.cg_time_s == 5.0
+    assert result.execution.total_time_s == 16.0
+
+
+@pytest.mark.parametrize("bound,expected", [(0.0, 0.0), (float("inf"), None),
+                                          (float("nan"), None), (1e20, None)])
+def test_pricing_reports_finite_bound_even_without_an_incumbent(bound, expected):
+    model = Mock()
+    model.solution.get_status.return_value = 108
+    model.solution.is_primal_feasible.return_value = False
+    model.solution.MIP.get_best_objective.return_value = bound
+    queue = Queue()
+    assert slave_problem.solve_slave_model(model, queue, None, 4, 1, 1, 1) == (None, None, [])
+    message = queue.get_nowait()
+    assert message["best_bound"] == expected
+    assert message["objective"] is None
+    model.solution.get_objective_value.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", [115, 118, 133, 999])
+def test_invalid_pricing_state_cannot_supply_a_bound_certificate(raw):
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    progress.put({"phase": "lp", "state": map_cplex_lp_status(1),
+                  "raw_status": 1, "objective": 2.5})
+    progress.put({"phase": "pricing", "state": map_cplex_mip_status(raw),
+                  "raw_status": raw, "objective": None, "best_bound": 0.0})
+    assert not progress.result().diagnostics.lp_convergence_proven
+
+
+def test_objective_extraction_error_preserves_completed_pricing_status():
+    model = Mock()
+    model.solution.get_status.return_value = 101
+    model.solution.is_primal_feasible.return_value = True
+    model.solution.get_objective_value.side_effect = RuntimeError("objective unavailable")
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    with pytest.raises(RuntimeError, match="objective unavailable"):
+        slave_problem.solve_slave_model(model, progress, None, 4, 1, 1, 1)
+    assert progress.result().diagnostics.pricing_status.raw_cplex_status == 101
+    assert progress.result().diagnostics.pricing_objective is None
+    assert not progress.result().diagnostics.lp_convergence_proven
+
+
+def test_iteration_history_separates_build_and_solve(stub_run):
+    result = stub_run([(make_slice(1), 1.0, ["z_x_1_0"]), (None, 0.0, [])])
+    first, second = result.iterations
+    assert [row.iteration for row in result.iterations] == [1, 2]
+    assert all(row.completed for row in result.iterations)
+    assert (first.pool_before, first.pool_after, first.generated_columns) == (1, 2, 1)
+    assert (second.pool_before, second.pool_after, second.generated_columns) == (2, 2, 0)
+    assert (first.lp_value, second.lp_value) == (1.5, 2.5)
+    assert (first.pricing_objective, second.pricing_objective) == (1.0, 0.0)
+    assert (first.stop_reason, second.stop_reason) == ("column_added", "pricing_converged")
+    assert first.master_build_time_s == 1
+    assert second.master_build_time_s == 0
+    assert result.metrics.master_build_time_s == 1
+    assert result.metrics.master_solve_time_s == 4
+    assert result.metrics.pricing_build_time_s == 2
+    assert result.metrics.pricing_solve_time_s == 4
+    for field in ("master_lp_time_s", "pricing_time_s", "master_build_time_s",
+                  "master_solve_time_s", "pricing_build_time_s", "pricing_solve_time_s"):
+        assert sum(getattr(row, field) for row in result.iterations) == getattr(result.metrics, field)
+
+
+def test_failed_master_does_not_reuse_previous_iteration_values(stub_run, monkeypatch):
+    original = cg.solve_master_model
+    calls = [0]
+    def master(model, queue, manual, relaxed, initial):
+        if relaxed:
+            calls[0] += 1
+            if calls[0] == 2:
+                with cg.timed_component(queue, "master_solve"):
+                    stub_run.clock[0] += 2
+                queue.put({"phase": "lp", "objective": None,
+                           "state": map_cplex_lp_status(11, False), "raw_status": 11})
+                return None, None, []
+        return original(model, queue, manual, relaxed, initial)
+    monkeypatch.setattr(cg, "solve_master_model", master)
+    result = stub_run([(make_slice(1), 1.0, ["z_x_1_0"])])
+    assert result.metrics.lp_value == 1.5
+    assert len(result.iterations) == 2
+    row = result.iterations[-1]
+    assert not row.completed
+    assert row.stop_reason == "lp_limit"
+    assert row.lp_value is None
+    assert row.pricing_objective is None
+    assert row.pricing_status.raw_cplex_status is None
+    assert row.lp_status.raw_cplex_status == 11
+
+
+def test_successful_duplicate_retry_closes_one_attempt_before_continue(stub_run):
+    result = stub_run([(make_slice(0), 1.0, ["z_x_0_0"]),
+                       (make_slice(1), 1.0, ["z_x_1_0"]), (None, 0.0, [])],
+                      finalization_heuristics=True)
+    assert [row.iteration for row in result.iterations] == [1, 2]
+    first = result.iterations[0]
+    assert first.stop_reason == "alternative_column_added"
+    assert first.pricing_calls == 2
+    assert first.pricing_build_time_s == 2
+    assert first.pricing_solve_time_s == 4
+    assert first.pool_after == 2
+    assert first.generated_columns == 1
+    assert first.auxiliary_pricing_status.raw_cplex_status == 101
+
+
+@pytest.mark.parametrize("component", ["master_build", "master_solve", "pricing_build", "pricing_solve"])
+def test_partial_iteration_extends_active_component_to_parent_cutoff(monkeypatch, component):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    progress.begin_iteration(3)
+    phase = "master_lp" if component.startswith("master_") else "pricing"
+    progress.start_phase(phase)
+    progress.start_component(component)
+    clock[0] = 1.25
+    snapshot = progress.result(include_history=False)
+    clock[0] = 9.0
+    result = cg._account_interruption(snapshot, 4.0, "wall_clock_timeout")
+    assert getattr(result.metrics, component + "_time_s") == 4.0
+    assert len(result.iterations) == 1
+    row = result.iterations[0]
+    assert getattr(row, component + "_time_s") == 4.0
+    assert row.iteration_time_s == 4.0
+    assert not row.completed
+    assert row.stop_reason == "wall_clock_timeout"
+    assert row.pool_before == row.pool_after == 3
+    assert snapshot.current_iteration.iteration_time_s == 1.25
+    assert snapshot.iterations == []
+    assert result.current_iteration is None
+
+
+def test_history_is_sent_once_per_attempt_and_not_in_snapshots(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    queue = Queue()
+    progress = cg._CGProgress(queue, "stub", 0.0, True)
+    for iteration in range(1, 101):
+        progress.begin_iteration(2)
+        clock[0] += 0.1
+        progress.snapshot()
+        progress.end_iteration("column_added", 2)
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+    rows = [message["iteration"] for message in messages if isinstance(message, dict)]
+    snapshots = [message for message in messages if not isinstance(message, dict)]
+    assert len(rows) == 100
+    assert all(snapshot.iterations == [] for snapshot in snapshots)
+    assert len(progress.result().iterations) == 100
+    assert rows[0].iteration == 1
+    assert rows[0].snapshot_time_s == 0.1
+    assert rows[-1].iteration == 100
+
+
+def test_recording_can_be_disabled_without_losing_component_totals(stub_run):
+    result = stub_run([(None, 0.0, [])], record_iterations=False)
+    assert result.iterations == []
+    assert result.metrics.master_build_time_s == 1
+    assert result.metrics.master_solve_time_s == 2
+    assert result.metrics.pricing_build_time_s == 1
+    assert result.metrics.pricing_solve_time_s == 2
+
+
+def test_pricing_second_phase_has_separate_preparation_and_solve_time(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    progress.begin_iteration(1)
+    progress.start_phase("pricing")
+    model = Mock()
+    def solve():
+        clock[0] += 2
+    def prepare(**kwargs):
+        clock[0] += 1
+    model.solve.side_effect = solve
+    model.linear_constraints.add.side_effect = prepare
+    model.solution.get_status.return_value = 101
+    model.solution.is_primal_feasible.return_value = True
+    model.solution.get_objective_value.return_value = 1
+    model.solution.get_values.return_value = [1]
+    model.variables.get_names.return_value = ["z_x_0_0"]
+    model.objective.get_linear.return_value = [1]
+    slave_problem.solve_slave_model(model, progress, None, 4, 1, 1, 1,
+                                    finalization_heuristics=True)
+    progress.end_phase()
+    progress.end_iteration("column_added", 1)
+    result = progress.result()
+    assert result.metrics.pricing_build_time_s == 1
+    assert result.metrics.pricing_solve_time_s == 4
+    row = result.iterations[0]
+    assert row.pricing_calls == row.pricing_phase2_calls == 1
+    assert row.pricing_phase2_status.raw_cplex_status == 101
+
+
+def test_component_time_excludes_checkpoint_publication(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    class SlowQueue:
+        def put(self, message):
+            clock[0] += 0.25
+    progress = cg._CGProgress(SlowQueue(), "stub", 0.0, True)
+    progress.begin_iteration(1)
+    progress.start_phase("master_lp")
+    with cg.timed_component(progress, "master_solve"):
+        clock[0] += 1.0
+    progress.end_phase()
+    assert progress.result().metrics.master_solve_time_s == 1.0
+    assert progress.result().metrics.master_lp_time_s > 1.0
+
+
+def test_second_phase_failure_is_visible_in_its_iteration(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    progress.begin_iteration(1)
+    progress.start_phase("pricing")
+    model = Mock()
+    model.solve.side_effect = [None, RuntimeError("phase2 failed")]
+    model.solution.get_status.return_value = 101
+    model.solution.is_primal_feasible.return_value = True
+    model.solution.get_objective_value.return_value = 1
+    model.solution.get_values.return_value = [1]
+    model.variables.get_names.return_value = ["z_x_0_0"]
+    model.objective.get_linear.return_value = [1]
+    _, objective, _ = slave_problem.solve_slave_model(
+        model, progress, None, 4, 1, 1, 1, finalization_heuristics=True)
+    assert objective == 1  # The first-phase incumbent remains usable.
+    progress.current_iteration.completed = True
+    progress.end_phase()
+    progress.end_iteration("column_added", 1)
+    row = progress.result().iterations[0]
+    assert not row.completed
+    assert row.stop_reason == "error"
+    assert row.pricing_calls == row.pricing_phase2_calls == 1
+    assert row.pricing_status.raw_cplex_status == 101
+    assert row.pricing_phase2_status.termination_status == "Error"
+    assert row.pricing_phase2_status.raw_cplex_status is None
+
+
+def test_parent_merges_closed_rows_and_extends_only_active_row(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "stub", 0.0, True)
+    progress.begin_iteration(1)
+    progress.start_phase("master_lp")
+    with cg.timed_component(progress, "master_solve"):
+        clock[0] = 1.0
+    progress.end_phase()
+    progress.current_iteration.completed = True
+    progress.end_iteration("column_added", 2)
+    closed = progress.iterations[0]
+    progress.begin_iteration(2)
+    progress.start_phase("pricing")
+    progress.start_component("pricing_solve")
+    clock[0] = 1.25
+    snapshot = progress.result(include_history=False)
+    messages = [{"iteration": closed}, snapshot]
+    class StubQueue:
+        def get(self, timeout):
+            if messages:
+                return messages.pop(0)
+            clock[0] += timeout
+            raise Empty
+        def get_nowait(self):
+            raise Empty
+        def close(self):
+            pass
+    process = Mock()
+    process.is_alive.return_value = True
+    def shutdown(*args):
+        clock[0] += 1.0
+    process.join.side_effect = shutdown
+    monkeypatch.setattr(cg.multiprocessing, "Queue", StubQueue)
+    monkeypatch.setattr(cg.multiprocessing, "Process", lambda **kwargs: process)
+    result = cg.execute_with_time_limit(0.25, {"case_name": "stub", "bin_width": 4,
+        "bin_height": 4, "item_width": 1, "item_height": 1})
+    assert [row.iteration for row in result.iterations] == [1, 2]
+    assert result.iterations[0].completed
+    assert result.iterations[0].iteration_time_s == 1.0
+    assert not result.iterations[1].completed
+    assert result.iterations[1].stop_reason == "wall_clock_timeout"
+    assert result.iterations[1].pricing_solve_time_s == pytest.approx(0.5)
+    assert result.iterations[1].iteration_time_s == pytest.approx(0.5)
+    assert result.metrics.pricing_solve_time_s == pytest.approx(0.5)
+    assert result.execution.total_time_s >= 2.25
+
+
+def test_second_phase_postprocessing_error_preserves_actual_solver_state():
+    progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
+    progress.begin_iteration(1)
+    progress.start_phase("pricing")
+    model = Mock()
+    model.solution.get_status.return_value = 101
+    model.solution.is_primal_feasible.return_value = True
+    model.solution.get_objective_value.return_value = 1
+    model.variables.get_names.return_value = ["z_x_0_0"]
+    model.objective.get_linear.return_value = [1]
+    mapper = Mock()
+    first_slice = make_slice(0)
+    mapper.map_solution.side_effect = [
+        (first_slice, first_slice.get_items(), ["z_x_0_0"], ([], [])),
+        RuntimeError("mapping phase2 failed"),
+    ]
+    solver = slave_problem.SlaveSolver(solution_mapper=mapper)
+    _, objective, _ = solver.solve(model, progress, None, 4, 1, 1, 1,
+                                   finalization_heuristics=True)
+    assert objective == 1
+    progress.current_iteration.completed = True
+    progress.end_phase()
+    progress.end_iteration("column_added", 1)
+    row = progress.result().iterations[0]
+    assert not row.completed
+    assert row.stop_reason == "error"
+    assert row.pricing_phase2_status.raw_cplex_status == 101
+    assert row.pricing_phase2_status.model_status == 1
+    assert row.pricing_phase2_calls == 1
+
+
+def test_dual_extraction_error_keeps_this_iteration_lp_without_stale_pricing(stub_run, monkeypatch):
+    original = cg.solve_master_model
+    def master(model, queue, manual, relaxed, initial):
+        result = original(model, queue, manual, relaxed, initial)
+        if relaxed:
+            raise RuntimeError("dual extraction failed")
+        return result
+    monkeypatch.setattr(cg, "solve_master_model", master)
+    result = stub_run([])
+    assert result.execution.termination_status == "Error"
+    row = result.iterations[0]
+    assert row.lp_value == 1.5
+    assert row.lp_status.raw_cplex_status == 1
+    assert row.master_solve_time_s == 2
+    assert not row.completed
+    assert row.stop_reason == "error"
+    assert row.pricing_status.raw_cplex_status is None
+    assert row.pricing_objective is None

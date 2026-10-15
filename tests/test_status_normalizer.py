@@ -141,6 +141,9 @@ def test_result_contract():
     assert asdict(metrics) == dict(
         lp_value=None, restricted_integer_master=None, cg_iterations=0,
         generated_columns=0, cg_time_s=0.0, integer_master_time_s=0.0,
+        master_lp_time_s=0.0, pricing_time_s=0.0,
+        master_build_time_s=0.0, master_solve_time_s=0.0,
+        pricing_build_time_s=0.0, pricing_solve_time_s=0.0,
     )
     assert ColumnGenerationExecutionResult(result, metrics).execution is result
 
@@ -456,9 +459,9 @@ def test_fixed_lp_statuses_reject_primal_override(raw, model, feasible):
 
 def test_model_creation_consumes_solver_budget(monkeypatch):
     pytest.importorskip("cplex")
-    from utils import model_functions
+    from utils import model_functions, model_runner
 
-    monkeypatch.setattr(model_functions.time, "perf_counter", Mock(side_effect=[1.0, 3.0, 3.123456]))
+    monkeypatch.setattr(model_runner.time, "perf_counter", Mock(side_effect=[1.0, 3.0, 3.123456]))
     model = Mock()
     solve = Mock()
     queue = Mock()

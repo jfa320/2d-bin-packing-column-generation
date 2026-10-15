@@ -141,7 +141,7 @@ Un duplicado no se agrega al pool. Cuando las heurísticas están desactivadas, 
 
 La ausencia de columnas mejorantes certifica el cierre del LP completo solamente si el pricing correspondiente está resuelto con una prueba suficiente y cubre el universo de columnas considerado. El código actual permite devolver un incumbente factible de pricing aunque la resolución termine por límite.
 
-Si ese incumbente tiene valor no positivo, el orquestador puede detenerse sin consultar una cota que descarte otras columnas positivas. Conserva el estado de terminación anormal; ese resultado no debe interpretarse como prueba de convergencia LP. Tampoco el corte por duplicado o por estancamiento constituye esa prueba.
+Si ese incumbente tiene valor no positivo, el orquestador puede detenerse sin disponer de una cota que descarte otras columnas positivas. Conserva el estado de terminación anormal; ese resultado no debe interpretarse como prueba de convergencia LP. La instrumentación registra por separado `cg_stop_reason` y `lp_convergence_proven`: solo acredita cierre con un LP válido y óptimo y una prueba del pricing principal con duales originales (objetivo óptimo o cota superior finita <= `EPS`). Una segunda fase con otro objetivo o un pricing con exclusiones no aportan esa prueba. Tampoco el corte por duplicado o por estancamiento constituye esa prueba. El detalle de tiempos y estados por fase está en [benchmark_paver.md](benchmark_paver.md#tiempos-por-fase-y-diagnóstico-cg).
 
 ## Heurísticas opcionales y estabilización
 
