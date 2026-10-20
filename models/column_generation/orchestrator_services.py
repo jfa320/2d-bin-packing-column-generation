@@ -189,11 +189,18 @@ class SlaveCutManager:
     """Apply optional pricing cuts without exposing CPLEX details to the loop."""
 
     def add_no_good_cut(self, slave_model, active_variables, cut_id):
-        if not active_variables:
+        """Exclude one placement pattern, regardless of auxiliary window choices."""
+        names = [
+            name for name in slave_model.variables.get_names()
+            if name.startswith("z_x_") or name.startswith("z_y_")
+        ]
+        if not names:
             return
+        active = set(active_variables) & set(names)
+        # At least one placement must change: remove an active one or add an inactive one.
         add_constraint(
-            slave_model, [1.0] * len(active_variables), active_variables,
-            len(active_variables) - 1, "L", f"nogood_{cut_id}"
+            slave_model, [-1.0 if name in active else 1.0 for name in names], names,
+            1.0 - len(active), "G", f"nogood_{cut_id}"
         )
 
     def add_non_empty_constraint(self, slave_model):

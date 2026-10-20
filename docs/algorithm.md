@@ -160,15 +160,17 @@ La estabilización usa un flag independiente, `USE_DUAL_STABILIZATION = False`, 
 
 ### Alcance real de los no-good cuts
 
-`SlaveCutManager` agrega, para un conjunto de variables activas `A`:
+`SlaveCutManager` excluye el patrón exacto de ubicaciones encontrado. Si `A` es el conjunto de ubicaciones activas y `U` contiene todas las variables de ubicación `z_x_*` y `z_y_*`, agrega:
 
 ```text
-sum(z_i, i en A) <= len(A) - 1
+sum(1 - z_i, i en A) + sum(z_i, i en U menos A) >= 1
 ```
 
-Esto excluye la solución original y todos sus superconjuntos: obliga a quitar al menos una ubicación de `A`, aunque se agreguen otras ubicaciones. Por lo tanto, el corte implementado es más fuerte que excluir únicamente una solución exacta.
+El corte obliga a cambiar al menos una ubicación: quitar una activa o agregar una inactiva. Así preserva subconjuntos, superconjuntos y otros patrones distintos que sean geométricamente factibles. Las variables auxiliares de ventana `s_*` quedan fuera del corte, porque otra ventana con los mismos ítems representa la misma columna. Para `A` vacío, el corte exige al menos una ubicación activa.
 
-En el diagnóstico se verificó que cortar los tres NR en `(0,0)`, `(13,0)` y `(26,0)` impide también generar la columna que conserva esos tres y agrega el rotado en `(39,0)`. Este alcance afecta a la exploración opcional y debe considerarse al interpretar sus resultados. El algoritmo base no agrega estos cortes.
+La formulación anterior, `sum(z_i, i en A) <= len(A) - 1`, también excluía todos los superconjuntos. En `50 x 20 / 13 x 8`, cortar los tres NR en `(0,0)`, `(13,0)` y `(26,0)` impedía generar la columna que conserva esos tres y agrega el rotado en `(39,0)`. Las pruebas de `tests/test_slave_cuts.py` verifican que el corte actual excluye la fila original y permite esa extensión, además de comprobar todos los patrones de un universo pequeño y las distintas ventanas auxiliares.
+
+Los cortes se aplican en los reintentos por duplicados y en la generación de columnas extra de las heurísticas opcionales. El algoritmo base no agrega estos cortes. La exploración conserva el límite de cinco intentos; excluir sólo patrones exactos no garantiza una mejora del objetivo entero en cada instancia.
 
 ## Inicialización actual y alternativa de Marcelo
 
@@ -218,7 +220,7 @@ columna mixta de 4: valor = +1
 mejor columna inicial devuelta por pricing: 5 rotados, valor = +5
 ```
 
-La mixta mejora a la fila de tres, pero no es la mejor columna para esos duales. No apareció entre las primeras 12 alternativas exploradas con los cortes implementados. Esa exploración acotada no prueba que nunca pueda aparecer.
+La mixta mejora a la fila de tres, pero no es la mejor columna para esos duales. No apareció entre las primeras 12 alternativas exploradas con la formulación anterior de los cortes. Esa exploración acotada no prueba que nunca pueda aparecer.
 
 ### Verificación del 8 de octubre de 2026
 
