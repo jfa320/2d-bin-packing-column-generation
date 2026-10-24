@@ -2,9 +2,9 @@ import argparse
 import time
 
 from models.column_generation import column_generation_solver
-from models.comparative import Model_1_Simplified_Section_2_8_No_Rotation
-from models.comparative import Model_1_Simplified_Section_2_9_With_Rotation
-from models.comparative import Model_6_Andrade_Birgin_Monoitem
+from models.comparative import pisinger_sigurd_2005_no_rotation
+from models.comparative import pisinger_sigurd_2005_rotation
+from models.comparative import andrade_birgin_2013
 from models.comparative import Model_7_Exact_Monoitem_Backtracking
 from config import DEFAULT_CASE_NAME, get_instance, list_instance_names
 from utils.trace_file_generator import TraceFileGenerator
@@ -18,9 +18,9 @@ PAVER = PaverConstants
 
 MODELS = [
     column_generation_solver,
-    Model_1_Simplified_Section_2_8_No_Rotation,
-    Model_1_Simplified_Section_2_9_With_Rotation,
-    Model_6_Andrade_Birgin_Monoitem,
+    pisinger_sigurd_2005_no_rotation,
+    pisinger_sigurd_2005_rotation,
+    andrade_birgin_2013,
     Model_7_Exact_Monoitem_Backtracking,
 ]
 

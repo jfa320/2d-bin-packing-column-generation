@@ -328,9 +328,9 @@ def test_parent_user_interruption(monkeypatch):
 
 
 COMPARATIVE_MODULES = [
-    "Model_1_Simplified_Section_2_8_No_Rotation",
-    "Model_1_Simplified_Section_2_9_With_Rotation",
-    "Model_6_Andrade_Birgin_Monoitem",
+    "pisinger_sigurd_2005_no_rotation",
+    "pisinger_sigurd_2005_rotation",
+    "andrade_birgin_2013",
     "Model_7_Exact_Monoitem_Backtracking",
 ]
 
@@ -357,7 +357,10 @@ def test_model_names_are_unique():
     pytest.importorskip("cplex")
     names = [importlib.import_module("models.comparative." + name).MODEL_NAME for name in COMPARATIVE_MODULES]
     assert len(set(names)) == len(names)
-    assert names[:2] == ["Model1NoRotation", "Model1Rotation"]
+    assert names[:3] == [
+        "PisingerSigurd2005NoRotation", "PisingerSigurd2005Rotation",
+        "AndradeBirgin2013BigM",
+    ]
 
 
 @pytest.mark.parametrize("raw", [109, 110, 116, 117, 999])

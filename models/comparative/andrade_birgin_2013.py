@@ -1,18 +1,23 @@
-"""Timed execution adapter for the Andrade--Birgin model."""
+"""Timed adapter for the Big-M adaptation of Andrade and Birgin (2013).
+
+Symmetry-breaking constraints for packing identical rectangles within polyhedra.
+Optimization Letters 7, 375-405. DOI: 10.1007/s11590-011-0425-9.
+The local paper is the 2011 preprint; the final journal volume is dated 2013.
+"""
 
 from config import (
     BIN_HEIGHT, BIN_WIDTH, CASE_NAME, ITEM_HEIGHT, ITEM_WIDTH, get_instance,
 )
-from models.comparative.andrade_birgin_model import AndradeBirginModelBuilder
+from models.comparative.andrade_birgin_2013_model import AndradeBirgin2013ModelBuilder
 from utils.execution_result import ExecutionResult
 from utils.execution_runner import TimedModelExecutor
 from utils.model_functions import run_model, solve_mip_model
 
-MODEL_NAME = "AndradeBirginBigM"
+MODEL_NAME = "AndradeBirgin2013BigM"
 
 
 def _builder_from_globals():
-    return AndradeBirginModelBuilder(
+    return AndradeBirgin2013ModelBuilder(
         BIN_WIDTH, BIN_HEIGHT, ITEM_WIDTH, ITEM_HEIGHT
     )
 

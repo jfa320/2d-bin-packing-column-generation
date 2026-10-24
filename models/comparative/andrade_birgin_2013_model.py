@@ -1,11 +1,17 @@
-"""Pure model builder for the Andrade--Birgin mono-item formulation."""
+"""Big-M model builder adapted from Andrade and Birgin (2013).
+
+Symmetry-breaking constraints for packing identical rectangles within polyhedra.
+Optimization Letters 7, 375-405. DOI: 10.1007/s11590-011-0425-9.
+Uses the Section 2, equation (4) formulation for a rectangular bin; it does not
+include the symmetry-breaking constraints introduced in Section 3.
+"""
 
 import cplex
 
 from utils.cplex_helpers import add_constraint, add_variables
 
 
-class AndradeBirginModelBuilder:
+class AndradeBirgin2013ModelBuilder:
     def __init__(self, bin_width, bin_height, item_width, item_height):
         self.bin_width = bin_width
         self.bin_height = bin_height

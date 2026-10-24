@@ -1,11 +1,17 @@
+"""Mono-item adaptation of Pisinger and Sigurd (2005), without rotation.
+
+The two-dimensional bin packing problem with variable bin sizes and costs.
+Discrete Optimization 2(2), 154-167. DOI: 10.1016/j.disopt.2005.01.002.
+The base formulation is Section 2, equation (4), adapted to a single bin and
+maximizing the number of identical items.
+"""
+
 import cplex
 from utils.model_functions import *
 from utils.execution_runner import TimedModelExecutor
 from config import *
 
-# Based on the simplified model 1 formulation (base model - Pisinger & Sigurd); see Overleaf section 2.8 for the complete model
-# Simple case improved by rotation
-MODEL_NAME = "Model1NoRotation"
+MODEL_NAME = "PisingerSigurd2005NoRotation"
 
 
 def apply_instance(instance):

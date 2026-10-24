@@ -44,7 +44,10 @@ class TraceFileGenerator:
                     or any(char in name for char in ',\r\n') or name.startswith('*')):
                 raise ValueError("Trace names must be nonempty, unquoted single fields")
         if result.model_name == "Model1":
-            raise ValueError("Use Model1NoRotation or Model1Rotation, not ambiguous Model1")
+            raise ValueError(
+                "Use PisingerSigurd2005NoRotation or PisingerSigurd2005Rotation, "
+                "not ambiguous Model1"
+            )
         if result.termination_status not in TERMINATION_STATUSES:
             raise ValueError(f"Invalid PAVER TerminationStatus: {result.termination_status!r}")
         if result.model_status is not None and (

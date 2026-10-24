@@ -9,6 +9,11 @@
 > adaptarse a los identificadores `case*` del catálogo actual en `instances.py`.
 > Las tablas de ejemplo no constituyen evidencia de una corrida vigente;
 > un entero `NA` por límite o interrupción no demuestra una brecha LP/IP.
+> Los nombres actuales de los comparadores bibliográficos son
+> `PisingerSigurd2005NoRotation`, `PisingerSigurd2005Rotation` y
+> `AndradeBirgin2013BigM`. Reemplazan, respectivamente, `Model1NoRotation`,
+> `Model1Rotation` y `AndradeBirginBigM` de las trazas anteriores. La
+> correspondencia con los papers está en el [README](../README.md#modelos-implementados).
 
 > Documento de referencia para recordar qué es PAVER, cómo está
 > instalado actualmente, cómo generar un informe a partir de archivos

@@ -26,10 +26,18 @@ Las heurísticas de alternativas con cortes, exploración de columnas cercanas a
 | --- | --- | --- |
 | Generación de columnas | Modelo maestro-esclavo con generación iterativa de rebanadas | Propuesta principal de la tesina |
 | Backtracking exacto | Resolución exacta adaptada a las instancias monoítem estudiadas | Comparación |
-| Andrade-Birgin | Modelo de referencia adaptado a partir de la formulación de Andrade y Birgin | Comparación |
-| Modelos simplificados | Modelos de la literatura adaptados al 2D-BPP monoítem estudiado en esta tesina | Comparación y validación |
+| `PisingerSigurd2005NoRotation` | Adaptación monoítem de Pisinger y Sigurd (2005), sin rotación | Comparación y validación |
+| `PisingerSigurd2005Rotation` | Adaptación de la misma formulación, extendida con rotación de 90° | Comparación y validación |
+| `AndradeBirgin2013BigM` | Adaptación Big-M de Andrade y Birgin (2013), con rotación | Comparación |
 
 Los modelos de comparación fueron adaptados a partir de formulaciones o enfoques que no coincidían exactamente con el alcance de esta tesina. En particular, algunas formulaciones originales consideran múltiples tipos de ítems, múltiples tamaños o restricciones adicionales, como prioridades entre ítems.
+
+Las referencias que identifican los nombres de ejecución son:
+
+- Pisinger, D. y Sigurd, M. (2005). *The two-dimensional bin packing problem with variable bin sizes and costs*. Discrete Optimization, 2(2), 154–167. [DOI: 10.1016/j.disopt.2005.01.002](https://doi.org/10.1016/j.disopt.2005.01.002). Se adapta la formulación de la sección 2, ecuación (4).
+- Andrade, R. y Birgin, E. G. (2013). *Symmetry-breaking constraints for packing identical rectangles within polyhedra*. Optimization Letters, 7, 375–405. [DOI: 10.1007/s11590-011-0425-9](https://doi.org/10.1007/s11590-011-0425-9). El PDF leído es la versión de 2011; el nombre usa el año del volumen definitivo. Se adapta la formulación Big-M de la sección 2, ecuación (4), sin las restricciones de ruptura de simetría de la sección 3.
+
+Los módulos activos son `pisinger_sigurd_2005_no_rotation.py`, `pisinger_sigurd_2005_rotation.py` y `andrade_birgin_2013.py`, dentro de `models/comparative/`. Sus identificadores reemplazan, respectivamente, `Model1NoRotation`, `Model1Rotation` y `AndradeBirginBigM`. Las trazas anteriores conservan los nombres con los que se generaron.
 
 ## Estructura del repositorio
 

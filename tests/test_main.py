@@ -30,11 +30,11 @@ def test_main_prints_final_objective_values(monkeypatch, tmp_path, capsys):
             ExecutionResult(case_name, "Model5Orchestrator", 8, "Normal", 4.0, 0.1),
             ColumnGenerationMetrics(),
         )),
-        model("Model1NoRotation", ExecutionResult(
-            case_name, "Model1NoRotation", 8, "Normal", 3.5, 0.1,
+        model("PisingerSigurd2005NoRotation", ExecutionResult(
+            case_name, "PisingerSigurd2005NoRotation", 8, "Normal", 3.5, 0.1,
         )),
-        model("Model1Rotation", ExecutionResult(
-            case_name, "Model1Rotation", 9, "TimeLimit", None, 0.1,
+        model("PisingerSigurd2005Rotation", ExecutionResult(
+            case_name, "PisingerSigurd2005Rotation", 9, "TimeLimit", None, 0.1,
         )),
     ]
 
@@ -51,5 +51,5 @@ def test_main_prints_final_objective_values(monkeypatch, tmp_path, capsys):
     assert "Final objective values:" in output
     assert "case1 (expected optimum=4):" in output
     assert "  Model5Orchestrator: 4 (time=0.100 s)" in output
-    assert "  Model1NoRotation: 3.5 (time=0.100 s)" in output
-    assert "  Model1Rotation: N/A (time=0.100 s)" in output
+    assert "  PisingerSigurd2005NoRotation: 3.5 (time=0.100 s)" in output
+    assert "  PisingerSigurd2005Rotation: N/A (time=0.100 s)" in output

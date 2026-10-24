@@ -17,7 +17,7 @@ def test_trace_has_paver_definition_and_serializes_missing_values(tmp_path):
     writer = TraceFileGenerator("run.trc", directory=str(tmp_path))
     writer.write_trace_record(ColumnGenerationExecutionResult(
         execution("IB_001"), ColumnGenerationMetrics(cg_iterations=3)))
-    writer.write_trace_record(execution("IB_002", "Model1Rotation",
+    writer.write_trace_record(execution("IB_002", "PisingerSigurd2005Rotation",
                                         model_status=9, termination_status="TimeLimit",
                                         objective_value=None))
 
