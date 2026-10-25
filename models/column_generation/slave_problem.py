@@ -177,6 +177,93 @@ class SlaveModelBuilder:
         )
 
 
+class IncrementalPricingModel:
+    """Keep one base pricing model and replace its objective for each dual vector.
+
+    The existing builder remains the reference construction path. Geometry is
+    cached from its variable names once; optional cuts and phase two must use
+    the rebuilding path instead of mutating this session.
+    """
+
+    def __init__(self, max_time, xy_x, xy_y, width_bin, height_item,
+                 width_item, height_bin, slice_height, *, model_factory=None):
+        self._geometry = (
+            max_time, tuple(xy_x), tuple(xy_y), width_bin, height_item,
+            width_item, height_bin, slice_height,
+        )
+        self._model_factory = model_factory or create_slave_model
+        self.model = None
+        self._cells_by_variable = ()
+        self._shape = None
+        self.build_count = 0
+
+    def _build(self, dual_values):
+        (max_time, xy_x, xy_y, width_bin, height_item,
+         width_item, height_bin, slice_height) = self._geometry
+        model = self._model_factory(
+            max_time, xy_x, xy_y, dual_values, width_bin,
+            height_item, width_item, height_bin, slice_height,
+        )
+        try:
+            # Reuse the matrix, but start each MIP search from scratch. Carrying
+            # incumbents between dual vectors changes which tied columns CPLEX
+            # returns and can worsen the final restricted integer solution.
+            model.parameters.advance.set(0)
+            cells_by_variable = []
+            for name in model.variables.get_names():
+                if name.startswith("s_"):
+                    cells_by_variable.append(None)
+                    continue
+                prefix, rotation, x, y = name.split("_")
+                if prefix != "z" or rotation not in {"x", "y"}:
+                    raise ValueError(f"Unexpected pricing variable: {name}")
+                width, height = ((width_item, height_item) if rotation == "x"
+                                 else (height_item, width_item))
+                cells_by_variable.append(tuple(
+                    f"({a},{b})"
+                    for a in range(int(x), int(x) + width)
+                    for b in range(int(y), int(y) + height)
+                ))
+            self._shape = (model.variables.get_num(), model.linear_constraints.get_num())
+        except Exception:
+            model.end()
+            raise
+        self.model = model
+        self._cells_by_variable = tuple(cells_by_variable)
+        self.build_count += 1
+        return model
+
+    def prepare(self, dual_values):
+        if self.model is None:
+            return self._build(dual_values)
+        try:
+            shape = (self.model.variables.get_num(), self.model.linear_constraints.get_num())
+            if shape != self._shape:
+                raise ValueError("Base pricing structure was modified")
+            pi = dual_values["pi"]
+            coefficients = [
+                (index, 0.0 if cells is None else
+                 1.0 - sum(pi.get(cell, 0.0) for cell in cells))
+                for index, cells in enumerate(self._cells_by_variable)
+            ]
+            self.model.objective.set_linear(coefficients)
+            self.model.objective.set_sense(self.model.objective.sense.maximize)
+        except Exception as error:
+            # A failed CPLEX update may have applied only some coefficients.
+            # Never solve that object; rebuild with the complete current input.
+            self.close()
+            print(f"Incremental pricing update failed; rebuilding the pricing: {error}")
+            return self._build(dual_values)
+        return self.model
+
+    def close(self):
+        model, self.model = self.model, None
+        self._cells_by_variable = ()
+        self._shape = None
+        if model is not None:
+            model.end()
+
+
 class SlaveSolutionMapper:
     """Reconstruct domain objects from an active CPLEX solution."""
 

@@ -28,6 +28,7 @@ def stub_run(monkeypatch):
     monkeypatch.setattr(cg, "add_non_empty_constraint", lambda *args: None)
     master_builds = []
     incremental_updates = []
+    pricing_models = []
 
     def build_master(*args):
         clock[0] += 1
@@ -68,6 +69,7 @@ def stub_run(monkeypatch):
         responses = iter(pricing)
 
         def slave(model, queue, manual, *args, finalization_heuristics=None):
+            pricing_models.append(model)
             with cg.timed_component(queue, "pricing_solve"):
                 clock[0] += 2
                 response = next(responses)
@@ -80,11 +82,14 @@ def stub_run(monkeypatch):
         monkeypatch.setattr(cg, "solve_slave_model", slave)
         return cg.orchestrator(Queue(), SimpleNamespace(value=True), 60, 0,
                                ConfigData(4, 4, 1, 1), return_structured=True,
-                               finalization_heuristics=kwargs.pop("finalization_heuristics", False), **kwargs)
+                               finalization_heuristics=kwargs.pop("finalization_heuristics", False),
+                               # Existing timing fixtures exercise the rebuild baseline.
+                               pricing_mode=kwargs.pop("pricing_mode", "rebuild"), **kwargs)
 
     run.master_builds = master_builds
     run.incremental_updates = incremental_updates
     run.clock = clock
+    run.pricing_models = pricing_models
     return run
 
 
@@ -110,6 +115,87 @@ def test_completed_iterations_and_phase_metrics(stub_run):
     assert result.execution.termination_status == "Normal"
     assert len(stub_run.master_builds) == 2  # Initial LP master and final integer master.
     assert len(stub_run.incremental_updates) == 1
+
+
+@pytest.mark.parametrize("pricing_mode", ["auto", "reuse"])
+@pytest.mark.parametrize("global_enhancements", [False, True])
+def test_reused_pricing_is_built_once_and_update_time_is_recorded(
+        stub_run, monkeypatch, pricing_mode, global_enhancements):
+    sessions = []
+
+    class PricingSession:
+        def __init__(self, *args):
+            self.model = object()
+            self.preparations = 0
+            self.closes = 0
+            sessions.append(self)
+
+        def prepare(self, duals):
+            stub_run.clock[0] += 1 if self.preparations == 0 else 0.25
+            self.preparations += 1
+            return self.model
+
+        def close(self):
+            self.closes += 1
+
+    monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSession)
+    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", global_enhancements)
+    result = stub_run([(make_slice(1), 1, ["z_x_1_0"]), (None, 0, [])],
+                      pricing_mode=pricing_mode, finalization_heuristics=False)
+    assert result.execution.termination_status == "Normal"
+    assert len(sessions) == 1
+    assert sessions[0].preparations == 2
+    assert sessions[0].closes == 1
+    assert stub_run.pricing_models == [sessions[0].model, sessions[0].model]
+    assert result.metrics.pricing_build_time_s == 1.25
+    assert result.metrics.pricing_solve_time_s == 4
+    assert [row.pricing_build_time_s for row in result.iterations] == [1, 0.25]
+    assert result.diagnostics.lp_convergence_proven
+
+
+@pytest.mark.parametrize("pricing_mode", ["auto", "reuse"])
+def test_reused_pricing_is_closed_after_preparation_failure(stub_run, monkeypatch, pricing_mode):
+    closed = []
+
+    class FailingSession:
+        def __init__(self, *args):
+            pass
+
+        def prepare(self, duals):
+            raise RuntimeError("cannot build pricing")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(cg, "IncrementalPricingModel", FailingSession)
+    result = stub_run([], pricing_mode=pricing_mode)
+    assert result.execution.termination_status == "Error"
+    assert "cannot build pricing" in result.execution.error_message
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("heuristics,global_flag", [(True, False), (None, True)])
+def test_auto_keeps_rebuilding_when_enhancements_are_enabled(
+        stub_run, monkeypatch, heuristics, global_flag):
+    session = Mock(side_effect=AssertionError("Enhanced pricing must use fresh models"))
+    monkeypatch.setattr(cg, "IncrementalPricingModel", session)
+    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", global_flag)
+    result = stub_run([(None, None, [])], pricing_mode="auto", finalization_heuristics=heuristics)
+    assert result.execution.termination_status == "Normal"
+    assert len(stub_run.pricing_models) == 1
+    session.assert_not_called()
+
+
+@pytest.mark.parametrize("options,message", [
+    ({"pricing_mode": "unknown"}, "Unknown pricing mode"),
+    ({"pricing_mode": "reuse", "finalization_heuristics": True}, "only the base algorithm"),
+])
+def test_invalid_pricing_mode_is_reported_before_any_solve(stub_run, options, message):
+    result = stub_run([], **options)
+    assert result.execution.termination_status == "Error"
+    assert message in result.execution.error_message
+    assert stub_run.master_builds == []
+    assert stub_run.pricing_models == []
 
 
 def test_failed_incremental_update_rebuilds_master(stub_run, monkeypatch, capsys):
@@ -152,7 +238,7 @@ def test_failed_incremental_update_rebuilds_master(stub_run, monkeypatch, capsys
     assert result.metrics.generated_columns == 1
     assert result.metrics.master_lp_time_s == 6
     assert len(builds) == 3  # Initial LP, fallback LP, final integer master.
-    assert builds[1][1] == (make_slice(0).get_id(), generated.get_id())
+    assert builds[1][1] == builds[0][1] + (generated.get_id(),)
     assert relaxed_solves == [builds[0][0], builds[1][0]]
     assert builds[0][0].partially_updated
     assert not builds[1][0].partially_updated

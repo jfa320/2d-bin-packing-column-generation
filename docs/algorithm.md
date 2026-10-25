@@ -6,6 +6,8 @@ El problema estudiado es el Manufacturer's Pallet Loading Problem (MPLP): un ún
 
 Esta descripción fue contrastada el **8 de octubre de 2026** con el código del commit `f2c05ba`. Los resultados de diagnóstico fechados más abajo son observaciones de esa revisión; los cambios de versión, parámetros o trayectoria del solver pueden producir otro pool.
 
+**Actualización del 25 de octubre de 2026:** el algoritmo base reutiliza también el modelo de pricing. El modo predeterminado `pricing_mode="auto"` conserva el objeto CPLEX y actualiza su objetivo entre iteraciones; cuando las mejoras prácticas están activas, selecciona reconstrucción. Los diagnósticos históricos de esta página conservan su fecha y alcance.
+
 ## Flujo del algoritmo base
 
 `USE_PRACTICAL_CG_ENHANCEMENTS` vale `False` por defecto. El diagrama describe ese flujo; los mecanismos opcionales se detallan en una sección propia.
@@ -17,7 +19,7 @@ flowchart TD
     C --> D[Construir el maestro inicial]
     D --> E[Resolver el maestro relajado]
     E --> F{¿Hay objetivo y duales válidos?}
-    F -- Sí --> G[Construir y resolver pricing]
+    F -- Sí --> G[Crear pricing una vez o actualizar su objetivo<br/>y resolver]
     F -- No --> L[Finalizar generación]
     G --> H{¿Devuelve una columna nueva<br/>con valor mayor que EPS?}
     H -- Sí --> I[Agregar la columna al pool]
@@ -33,6 +35,10 @@ flowchart TD
 
 El maestro LP se conserva entre iteraciones. `IncrementalMasterModel.add_slice` agrega la variable de una rebanada, sus coeficientes en filas existentes y las filas de las celdas nuevas que ocupa. Si una actualización falla, el orquestador descarta el maestro posiblemente modificado en forma parcial y lo reconstruye a partir del pool completo. El maestro entero final se construye de nuevo.
 
+El pricing del flujo base se conserva mediante `IncrementalPricingModel`, local a cada ejecución. Construye sus variables y restricciones en el primer uso, guarda las celdas ocupadas por cada colocación y luego reemplaza todos los coeficientes del objetivo con los duales actuales. Incluye los coeficientes que pasan a cero y mantiene en cero los de las ventanas auxiliares. Cada resolución inicia una búsqueda MIP nueva (`advance=0`): conservar incumbentes entre duales produjo una regresión del entero restringido en `case7` durante la integración. Si una actualización falla o cambia el tamaño de la estructura, descarta el objeto y reconstruye con los datos completos de la llamada. La sesión se libera al terminar CG y también ante errores.
+
+Las llamadas existentes de `main.py` y del benchmark usan esta selección automáticamente. Se puede forzar `pricing_mode="rebuild"` para comparar con el comportamiento anterior. La selección considera el valor efectivo de `finalization_heuristics` y del flag global: con mejoras activas, `auto` reconstruye; solicitar `reuse` explícitamente devuelve un error porque todavía no restaura sus restricciones temporales. Los modos y las mediciones que respaldan el cambio se detallan en [Reutilización del pricing](pricing_reuse.md).
+
 ### Trazabilidad del código
 
 | Responsabilidad | Archivo y funciones o clases |
@@ -43,7 +49,7 @@ El maestro LP se conserva entre iteraciones. `IncrementalMasterModel.add_slice` 
 | Pool inicial y registro de firmas | `orchestrator_services.py`: `InitialSliceGenerator.generate`, `SliceRegistry`, `build_slice_signature` |
 | Construcción y actualización del maestro | [master_problem.py](../models/column_generation/master_problem.py): `MasterModelBuilder`, `IncrementalMasterModel` |
 | Resolución LP/IP y extracción de duales | `master_problem.py`: `MasterSolver`, `DualExtractor` |
-| Construcción y resolución del pricing | [slave_problem.py](../models/column_generation/slave_problem.py): `SlaveModelBuilder`, `SlaveSolver`, `SlaveSolutionMapper` |
+| Construcción, actualización y resolución del pricing | [slave_problem.py](../models/column_generation/slave_problem.py): `SlaveModelBuilder`, `IncrementalPricingModel`, `SlaveSolver`, `SlaveSolutionMapper` |
 | Cortes opcionales | `orchestrator_services.py`: `SlaveCutManager` |
 | Conversión de coordenadas para la salida | `orchestrator_services.py`: `SolutionMapper.denormalize` |
 
@@ -54,7 +60,7 @@ execute_with_time_limit(instance)
    ├─ generate_positions_xym
    ├─ generate_initial_slices → SliceRegistry
    ├─ construir maestro inicial
-   ├─ repetir: actualizar maestro → resolver LP → duales → pricing
+   ├─ repetir: actualizar maestro → resolver LP → duales → preparar pricing y resolver
    │  └─ aceptar columna, aplicar mecanismos opcionales o detener
    └─ construir y resolver maestro entero → desnormalizar la solución
 ```

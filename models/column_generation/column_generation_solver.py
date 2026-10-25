@@ -18,7 +18,9 @@ from models.column_generation.master_problem import (
     create_master_model,
     solve_master_model,
 )
-from models.column_generation.slave_problem import create_slave_model, solve_slave_model
+from models.column_generation.slave_problem import (
+    IncrementalPricingModel, create_slave_model, solve_slave_model,
+)
 from models.column_generation.orchestrator_services import (
     calculate_slice_height,
     calculate_physical_item_bound,
@@ -392,11 +394,19 @@ class _CGProgress:
         self.snapshot()
 
 
-def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True):
+def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto"):
+    """Run CG, reusing base pricing by default and rebuilding enhanced pricing."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
     queue = progress
     practical_enhancements = USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics
+    pricing_session = None
     try:
+        if pricing_mode not in {"auto", "rebuild", "reuse"}:
+            raise ValueError(f"Unknown pricing mode: {pricing_mode}")
+        if pricing_mode == "auto":
+            pricing_mode = "rebuild" if practical_enhancements else "reuse"
+        if pricing_mode == "reuse" and practical_enhancements:
+            raise ValueError("Pricing reuse supports only the base algorithm; disable finalization heuristics")
         progress.snapshot()
         # Reset the Slice ID counter for each run
         Slice.reset_id_counter()
@@ -431,7 +441,17 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         previous_stabilized_dual_prices = None
 
         def prepare_pricing(duals, excluded=None):
+            nonlocal pricing_session
             with timed_component(queue, "pricing_build"):
+                if pricing_mode == "reuse":
+                    if excluded is not None:
+                        raise ValueError("Pricing reuse does not support auxiliary exclusions")
+                    if pricing_session is None:
+                        pricing_session = IncrementalPricingModel(
+                            max_time, positions_xy_x, positions_xy_y,
+                            bin_width, item_height, item_width, bin_height, slice_height,
+                        )
+                    return pricing_session.prepare(duals)
                 model = create_slave_model(
                     max_time, positions_xy_x, positions_xy_y, duals,
                     bin_width, item_height, item_width, bin_height, slice_height)
@@ -675,6 +695,9 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             progress.end_iteration("column_added", len(slices))
 
         progress.end_iteration(progress.diagnostics.cg_stop_reason, len(slices))
+        if pricing_session is not None:
+            pricing_session.close()
+            pricing_session = None
         # Solve the final integer master model and get the final objective value
         progress.ip_started = time.perf_counter()
         progress.metrics = replace(progress.metrics, cg_time_s=progress.ip_started - progress.started)
@@ -723,6 +746,15 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
         return None
 
+    finally:
+        if pricing_session is not None:
+            try:
+                pricing_session.close()
+            except Exception as error:
+                # Preserve the original solve/error result if resource cleanup fails.
+                print(f"Could not close the pricing model: {error}")
+
+
 def _account_interruption(result, stopped_at, reason):
     """Extend the last snapshot to the parent's cutoff, excluding shutdown time."""
     diagnostics = result.diagnostics
@@ -757,7 +789,8 @@ def _account_interruption(result, stopped_at, reason):
     ), iterations=iterations, current_iteration=None)
 
 
-def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True):
+def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto"):
+    """Execute one instance; auto uses persistent pricing for the base algorithm."""
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
         ExecutionResult(instance.get("case_name", CASE_NAME) if instance is not None else CASE_NAME,
@@ -794,7 +827,7 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             args=(queue, multiprocessing.Value('b', True), max_time, started,
                   config_data, instance["case_name"]),
             kwargs={"return_structured": True, "finalization_heuristics": finalization_heuristics,
-                    "record_iterations": record_iterations})
+                    "record_iterations": record_iterations, "pricing_mode": pricing_mode})
         process.start()
         def consume(message):
             nonlocal result, completed

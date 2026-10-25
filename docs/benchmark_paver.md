@@ -154,7 +154,7 @@ primera fila. Las posiciones y columnas iniciales se preparan antes de esa fila.
 |---|---|
 | `master_build_time_s` | Construcción inicial, actualización incremental, reconstrucción de respaldo y preparación del tipo de problema LP. |
 | `master_solve_time_s` | Tiempo de las llamadas a `model.solve()` del maestro LP; excluye extracción de duales, estados y solución. |
-| `pricing_build_time_s` | Construcción del pricing, restricciones de exclusión y preparación del objetivo/restricción de su segunda fase. |
+| `pricing_build_time_s` | Primera construcción y actualizaciones del objetivo del pricing reutilizado; en modo reconstrucción, armado de cada modelo. Con mejoras opcionales, incluye restricciones de exclusión y preparación del objetivo/restricción de su segunda fase. |
 | `pricing_solve_time_s` | Tiempo de todas las llamadas a `model.solve()` del pricing en ese intento, incluidas segunda fase y alternativas. |
 | `master_lp_time_s` / `pricing_time_s` | Totales de fase: incluyen los componentes anteriores y postprocesamiento/bookkeeping; no son solo solve. |
 | `iteration_time_s` | Tiempo de pared del intento, incluido el trabajo entre fases. Excluye el entero final. |
