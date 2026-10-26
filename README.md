@@ -18,7 +18,7 @@ La resolución se basa en generación de columnas. El problema se descompone en 
 
 El maestro LP se actualiza incrementalmente; si la actualización falla, se reconstruye desde el pool. El maestro entero final se construye de nuevo y utiliza únicamente las columnas generadas. Esta resolución no garantiza por sí sola el óptimo entero del problema original.
 
-Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. La inicialización greedy uniforme propuesta por Marcelo existe como alternativa, pero no está activa. Los detalles y el diagnóstico actualizado del caso `50 x 20 / 13 x 8` están en [`docs/algorithm.md`](docs/algorithm.md).
+Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. El pricing también se reutiliza en el flujo base. La formulación, la inicialización y las variantes disponibles están en la [guía del algoritmo](docs/algorithm.md).
 
 ## Modelos implementados
 
@@ -185,12 +185,47 @@ El CSV experimental se escribe en `Results\benchmark.csv` y la traza
 compatible con PAVER en `Results\benchmark.trc`. Se recomienda usar nombres
 de salida nuevos para cada corrida.
 
+## Piloto experimental por cuadrantes
+
+La variante de `models/quadrant_column_generation/` se ejecuta con un runner
+independiente; queda fuera de `main.py` y del benchmark general. Resuelve solo
+el ciclo raíz LP, sin maestro entero ni branch-and-price:
+
+```powershell
+python quadrant_pilot.py --input benchmark_validation_baseline.csv --output Results/quadrants_60s.csv --time 60
+```
+
+Usa `alpha=0.8`, cuatro columnas vacías iniciales y pricing secuencial Q1–Q4.
+Reporta todas las filas, incluidas las `NOT_APPLICABLE`. El presupuesto global
+incluye geometría y CG; el proceso externo tiene 15 segundos adicionales de
+margen por defecto, ajustables con `--external-grace`.
+
+Genera el CSV principal, `_iterations.csv`, `_pricing.csv` y metadatos `.json`.
+Rechaza sobrescribirlos. `QUADRANT_PILOT_PROGRESS_DIR` permite registrar el
+progreso de cada RMP en JSONL dentro de un directorio local.
+
+El análisis comparativo está acotado a `IB_010`, `IIIB_009` e `IIIB_006`, en
+ese orden en la corrida larga. Crear un CSV de entrada con esas tres filas
+del baseline para ejecutar la validación dirigida:
+
+```powershell
+python quadrant_pilot.py --input Results/quadrants_directed_input.csv --output Results/quadrants_1200s.csv --time 1200
+python quadrant_pilot_comparison.py --short Results/quadrants_60s.csv --long Results/quadrants_1200s.csv --output Results/quadrants_comparison.csv
+```
+
+El comparador necesita los CSV y metadatos del piloto; genera resumen,
+evolución y diagnóstico del último pricing. Sin cierre certificado,
+`lp_value` es solo el último RMP óptimo del pool, no un bound LP completo, y
+el gap LP queda `NA`. Los resultados y notas de corridas se conservan
+localmente en `Results/`.
+
 ## Ejecución de pruebas
 
 Comprobaciones rápidas sin resolver modelos:
 
 ```bash
 python -m pytest tests/test_config.py
+python -m pytest tests/test_quadrant_pilot.py tests/test_quadrant_pilot_comparison.py
 ```
 
 Pruebas puntuales con CPLEX:
@@ -202,10 +237,8 @@ python -m pytest "tests/test_feasibility.py::test_orchestrator_solution_is_feasi
 
 La suite completa se ejecuta con `python -m pytest`. Incluye resoluciones reales de CPLEX y casos grandes. Usar un límite externo de pared para verificaciones con solver: las pruebas que llaman directamente al orquestador no pasan por el monitor de su proceso hijo.
 
-## Algoritmo
+## Documentación
 
-La implementación utiliza un esquema de generación de columnas compuesto por un modelo maestro y un modelo esclavo, también denominado problema de *pricing*.
-
-El modelo maestro selecciona las rebanadas que forman la solución y el modelo esclavo genera nuevas columnas a partir de los valores duales.
-
-La descripción detallada, las condiciones de corte, el rol de cada modelo y el diagrama del flujo están documentados en [`docs/algorithm.md`](docs/algorithm.md).
+- [Algoritmo y variantes](docs/algorithm.md).
+- [Benchmark, métricas y estados](docs/benchmark_paver.md).
+- [Configuración y uso de PAVER](docs/HOWTO_PAVER.md).
