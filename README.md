@@ -20,11 +20,11 @@ El maestro LP se actualiza incrementalmente; si la actualización falla, se reco
 
 Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. El pricing también se reutiliza en el flujo base. La formulación, la inicialización y las variantes disponibles están en la [guía del algoritmo](docs/algorithm.md).
 
-La variante B está activada con `USE_PRICING_SOLUTION_POOL=True` en `config.py`:
+La generación múltiple está activada con `USE_PRICING_SOLUTION_POOL=True` en `config.py`:
 incorpora hasta cinco columnas útiles por iteración del pool habitual del pricing,
 con capacidad 20 e intensidad 1, sin `populate`. Cambiar el booleano a `False`
-restaura una columna por iteración. B requiere las heurísticas de finalización
-desactivadas; para usar estas, desactivar B. El benchmark conserva su selección
+restaura una columna por iteración. La generación múltiple requiere las heurísticas de finalización
+desactivadas. El benchmark conserva su selección
 explícita mediante `--pool-mode` y usa una columna si se omite esa opción.
 
 ## Modelos implementados
@@ -42,7 +42,7 @@ Los modelos de comparación fueron adaptados a partir de formulaciones o enfoque
 Las referencias que identifican los nombres de ejecución son:
 
 - Pisinger, D. y Sigurd, M. (2005). *The two-dimensional bin packing problem with variable bin sizes and costs*. Discrete Optimization, 2(2), 154–167. [DOI: 10.1016/j.disopt.2005.01.002](https://doi.org/10.1016/j.disopt.2005.01.002). Se adapta la formulación de la sección 2, ecuación (4).
-- Andrade, R. y Birgin, E. G. (2013). *Symmetry-breaking constraints for packing identical rectangles within polyhedra*. Optimization Letters, 7, 375–405. [DOI: 10.1007/s11590-011-0425-9](https://doi.org/10.1007/s11590-011-0425-9). El PDF leído es la versión de 2011; el nombre usa el año del volumen definitivo. Se adapta la formulación Big-M de la sección 2, ecuación (4), sin las restricciones de ruptura de simetría de la sección 3.
+- Andrade, R. y Birgin, E. G. (2013). *Symmetry-breaking constraints for packing identical rectangles within polyhedra*. Optimization Letters, 7, 375–405. [DOI: 10.1007/s11590-011-0425-9](https://doi.org/10.1007/s11590-011-0425-9). Se adapta la formulación Big-M de la sección 2, ecuación (4), sin las restricciones de ruptura de simetría de la sección 3.
 
 Los módulos activos son `pisinger_sigurd_2005_no_rotation.py`, `pisinger_sigurd_2005_rotation.py` y `andrade_birgin_2013.py`, dentro de `models/comparative/`. Sus identificadores reemplazan, respectivamente, `Model1NoRotation`, `Model1Rotation` y `AndradeBirginBigM`. Las trazas anteriores conservan los nombres con los que se generaron.
 
@@ -192,11 +192,6 @@ El CSV experimental se escribe en `Results\benchmark.csv` y la traza
 compatible con PAVER en `Results\benchmark.trc`. Se recomienda usar nombres
 de salida nuevos para cada corrida.
 
-## Diagnóstico y generación múltiple
-
-El diagnóstico de solution pool y la variante optativa de varias columnas por
-pricing se describen en [docs/pricing_pool.md](docs/pricing_pool.md).
-
 ## Piloto experimental por cuadrantes
 
 La variante de `models/quadrant_column_generation/` se ejecuta con un runner
@@ -216,12 +211,11 @@ Genera el CSV principal, `_iterations.csv`, `_pricing.csv` y metadatos `.json`.
 Rechaza sobrescribirlos. `QUADRANT_PILOT_PROGRESS_DIR` permite registrar el
 progreso de cada RMP en JSONL dentro de un directorio local.
 
-El análisis comparativo está acotado a `IB_010`, `IIIB_009` e `IIIB_006`, en
-ese orden en la corrida larga. Crear un CSV de entrada con esas tres filas
-del baseline para ejecutar la validación dirigida:
+Para comparar dos ejecuciones sobre las mismas instancias con distintos
+presupuestos:
 
 ```powershell
-python quadrant_pilot.py --input Results/quadrants_directed_input.csv --output Results/quadrants_1200s.csv --time 1200
+python quadrant_pilot.py --input benchmark_validation_baseline.csv --output Results/quadrants_1200s.csv --time 1200
 python quadrant_pilot_comparison.py --short Results/quadrants_60s.csv --long Results/quadrants_1200s.csv --output Results/quadrants_comparison.csv
 ```
 
@@ -252,5 +246,4 @@ La suite completa se ejecuta con `python -m pytest`. Incluye resoluciones reales
 ## Documentación
 
 - [Algoritmo y variantes](docs/algorithm.md).
-- [Benchmark, métricas y estados](docs/benchmark_paver.md).
-- [Configuración y uso de PAVER](docs/HOWTO_PAVER.md).
+- [Benchmark, métricas y PAVER](docs/benchmark_paver.md).

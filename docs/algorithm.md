@@ -127,18 +127,18 @@ una resolución incompleta: comprobar el estado del entero, la factibilidad y
 que LP/IP correspondan al pool analizado. Las métricas y los estados se
 explican en [benchmark_paver.md](benchmark_paver.md).
 
-## Variantes opcionales
+## Variantes
 
 ### Varias columnas del solution pool
 
-`USE_PRICING_SOLUTION_POOL=True` en `config.py` activa la variante B en las
+`USE_PRICING_SOLUTION_POOL=True` en `config.py` activa la generación múltiple en las
 ejecuciones normales. Cambiarlo a `False` conserva el camino de una columna,
 sin configurar ni extraer el pool. `pool_options=None` sigue ese flag;
 `PricingPoolOptions(max_columns=1)` o `use_pricing_pool=False` fuerzan una columna
 por ejecución. Las opciones explícitas prevalecen sobre el flag global, salvo
 que se pase `use_pricing_pool=False`.
 
-B requiere las heurísticas de finalización desactivadas: basta el flag global
+La generación múltiple requiere las heurísticas de finalización desactivadas: basta el flag global
 `USE_PRACTICAL_CG_ENHANCEMENTS=False` o `finalization_heuristics=False` explícito.
 No se combina con las otras heurísticas; solicitar ambas produce un error.
 
@@ -175,10 +175,11 @@ una discrepancia geométrica o de objetivo produce un error de corrección.
 Ni un pool agotado ni un duplicado certifican cierre. Es posible obtener
 un entero igual a la referencia y terminar con `lp_convergence_proven=False`.
 
-El diagnóstico y los comandos de benchmark están en
-[pricing_pool.md](pricing_pool.md). B está activada por el booleano de configuración,
-con hasta cinco columnas, capacidad 20 e intensidad 1. El benchmark mantiene
-`--pool-mode off` por defecto y el diagnóstico fuerza el control de una columna.
+La configuración predeterminada incorpora hasta cinco columnas, con capacidad
+20 e intensidad 1. El benchmark mantiene `--pool-mode off` por defecto;
+sus opciones están en la [guía de experimentación](benchmark_paver.md#generación-múltiple).
+
+### Heurísticas de finalización
 
 `finalization_heuristics` sobrescribe `USE_PRACTICAL_CG_ENHANCEMENTS`. El
 benchmark pasa explícitamente `False`.

@@ -33,3 +33,6 @@ Results/
 
 # Graphify generated knowledge graph outputs
 graphify-out/
+
+# Local assistant instructions
+/AGENTS.md
