@@ -80,8 +80,9 @@ pricing usa precio cero para las celdas sin entrada dual y maximiza:
 valor(s) = cantidad_de_items(s) - suma(pi de las celdas ocupadas por s)
 ```
 
-Una colocación aporta `1 - suma(pi de sus celdas)`. El flujo base devuelve
-una solución por iteración y acepta una columna nueva si `valor(s) > EPS`,
+Una colocación aporta `1 - suma(pi de sus celdas)`. Con
+`USE_PRICING_SOLUTION_POOL=False`, el flujo base devuelve una solución por
+iteración y acepta una columna nueva si `valor(s) > EPS`,
 con `EPS=1e-9`. Se detiene si faltan datos LP utilizables, una solución
 factible del pricing o una columna utilizable; también ante valor no positivo
 o una columna positiva duplicada.
@@ -127,6 +128,57 @@ que LP/IP correspondan al pool analizado. Las métricas y los estados se
 explican en [benchmark_paver.md](benchmark_paver.md).
 
 ## Variantes opcionales
+
+### Varias columnas del solution pool
+
+`USE_PRICING_SOLUTION_POOL=True` en `config.py` activa la variante B en las
+ejecuciones normales. Cambiarlo a `False` conserva el camino de una columna,
+sin configurar ni extraer el pool. `pool_options=None` sigue ese flag;
+`PricingPoolOptions(max_columns=1)` o `use_pricing_pool=False` fuerzan una columna
+por ejecución. Las opciones explícitas prevalecen sobre el flag global, salvo
+que se pase `use_pricing_pool=False`.
+
+B requiere las heurísticas de finalización desactivadas: basta el flag global
+`USE_PRACTICAL_CG_ENHANCEMENTS=False` o `finalization_heuristics=False` explícito.
+No se combina con las otras heurísticas; solicitar ambas produce un error.
+
+`PricingPoolOptions(max_columns=5, mode="passive", capacity=20)` configura
+`parameters.mip.pool.intensity` (1 por defecto en este modo) y
+`parameters.mip.pool.capacity`, conserva el incumbente y recupera hasta cuatro
+alternativas. La deduplicación incluye la equivalencia visible al maestro:
+cantidad de ítems y celdas ocupadas; ignora IDs y ventanas auxiliares.
+Se recalcula el valor con los duales actuales y solo se aceptan valores `> EPS`.
+Un incumbente duplicado no impide usar otras columnas nuevas del lote.
+
+`mode="populate"` usa intensidad 2 por defecto y, si faltan alternativas,
+llama a `populate_solution_pool()` con límite de generación y tiempo acotado
+por `populate_time_s`, `populate_ratio * tiempo_principal` y tiempo restante.
+El estado, objetivo y cota del solve principal se capturan antes de esa llamada;
+los estados de populate se registran aparte. Se conservan también alternativas
+leídas antes de populate, aunque este cambie el contenido del pool.
+
+El presupuesto de populate es una solicitud al solver: su costo real puede
+superarlo por sobrecostos y se mide íntegramente. El monitor externo limita
+la ejecución completa. La capacidad del pool no es un límite de búsqueda ni
+una garantía de obtener esa cantidad de columnas útiles.
+
+Las métricas estructuradas agregan tiempos `pool_search_time_s` y
+`pool_extract_time_s`, llamadas, evaluaciones, alternativas útiles, columnas
+extra y errores. Las iteraciones incluyen descartes y estado raw de populate.
+`pool_examined` cuenta evaluaciones: en modo populate puede inspeccionarse
+una misma solución antes y después de la búsqueda. `pool_size`,
+`lp_pool_size` e `integer_pool_size` identifican el pool de cada resultado;
+un LP previo a columnas pendientes no corresponde al pool final.
+
+Una falla de acceso al pool conserva el incumbente y queda registrada;
+una discrepancia geométrica o de objetivo produce un error de corrección.
+Ni un pool agotado ni un duplicado certifican cierre. Es posible obtener
+un entero igual a la referencia y terminar con `lp_convergence_proven=False`.
+
+El diagnóstico y los comandos de benchmark están en
+[pricing_pool.md](pricing_pool.md). B está activada por el booleano de configuración,
+con hasta cinco columnas, capacidad 20 e intensidad 1. El benchmark mantiene
+`--pool-mode off` por defecto y el diagnóstico fuerza el control de una columna.
 
 `finalization_heuristics` sobrescribe `USE_PRACTICAL_CG_ENHANCEMENTS`. El
 benchmark pasa explícitamente `False`.

@@ -84,7 +84,8 @@ def stub_run(monkeypatch):
                                ConfigData(4, 4, 1, 1), return_structured=True,
                                finalization_heuristics=kwargs.pop("finalization_heuristics", False),
                                # Existing timing fixtures exercise the rebuild baseline.
-                               pricing_mode=kwargs.pop("pricing_mode", "rebuild"), **kwargs)
+                               pricing_mode=kwargs.pop("pricing_mode", "rebuild"),
+                               use_pricing_pool=kwargs.pop("use_pricing_pool", False), **kwargs)
 
     run.master_builds = master_builds
     run.incremental_updates = incremental_updates

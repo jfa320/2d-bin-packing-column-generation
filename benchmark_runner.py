@@ -173,14 +173,15 @@ def _resolve_output_paths(output_path, trace_path, run_paver_after):
     return output, trace
 
 
-def _validate_distinct_paths(source, output, trace):
-    paths = [source, *_output_targets(output, trace)]
+def _validate_distinct_paths(source, output, trace, pool=False):
+    paths = [source, *_output_targets(output, trace, pool)]
     if len(set(paths)) != len(paths):
         raise ValueError("Input, output, iteration, phase, and trace paths must be distinct")
 
 
-def _output_targets(output, trace):
-    return [output, *report_paths(output)] + ([trace] if trace is not None else [])
+def _output_targets(output, trace, pool=False):
+    return ([output, *report_paths(output)] + ([trace] if trace is not None else [])
+            + ([output.with_name(output.stem + "_pool.jsonl")] if pool else []))
 
 
 def _confirm_overwrite(paths):
@@ -197,7 +198,8 @@ def _confirm_overwrite(paths):
 def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   expected_count=None, trace_path=None, execute=None,
                   run_paver_after=False, paver_path=None, paver_output=None,
-                  overwrite=False, detailed_csv=False):
+                  overwrite=False, detailed_csv=False, pool_options=None,
+                  random_seed=None, threads=None):
     """Write outputs and return the report Path; execute is a CG test seam.
 
     Relative output/trace paths are relative to the working directory. Solver
@@ -211,8 +213,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
         raise ValueError("max_time must be positive and finite")
     source = Path(input_path).resolve()
     output, trace = _resolve_output_paths(output_path, trace_path, run_paver_after)
-    _validate_distinct_paths(source, output, trace)
-    targets = _output_targets(output, trace)
+    _validate_distinct_paths(source, output, trace, pool_options is not None)
+    targets = _output_targets(output, trace, pool_options is not None)
     for target in targets:
         if target.exists():
             if not overwrite:
@@ -226,6 +228,26 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     report_fields = DETAILED_OUTPUT_FIELDS if detailed_csv else OUTPUT_FIELDS
     iteration_path, phase_path = report_paths(output)
     with ExitStack() as stack:
+        pool_stream = None
+        if pool_options is not None:
+            import json
+            import hashlib
+            import platform
+            import sys
+            from dataclasses import asdict
+            from models.column_generation.solution_pool import PricingPoolOptions
+            if not isinstance(pool_options, PricingPoolOptions):
+                raise ValueError("pool_options must be PricingPoolOptions")
+            pool_stream = stack.enter_context(output.with_name(
+                output.stem + "_pool.jsonl").open(output_mode, encoding="utf-8"))
+            pool_source_names = (
+                "benchmark_runner.py", "utils/execution_result.py",
+                "models/column_generation/solution_pool.py",
+                "models/column_generation/column_generation_solver.py",
+                "models/column_generation/slave_problem.py")
+            pool_sources = {name: hashlib.sha256((Path(__file__).resolve().parent / name)
+                                                .read_bytes()).hexdigest()
+                            for name in pool_source_names}
         stream = stack.enter_context(output.open(output_mode, newline="", encoding="utf-8"))
         iteration_stream = stack.enter_context(iteration_path.open(output_mode, newline="", encoding="utf-8"))
         phase_stream = stack.enter_context(phase_path.open(output_mode, newline="", encoding="utf-8"))
@@ -255,7 +277,18 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
             }
             started = time.perf_counter()
             try:
-                result = execute(max_time, instance=solver_instance, finalization_heuristics=False)
+                options = {}
+                if pool_options is not None:
+                    options["pool_options"] = pool_options
+                else:
+                    # --pool-mode off remains a one-column control regardless of config.
+                    options["use_pricing_pool"] = False
+                if random_seed is not None:
+                    options["random_seed"] = random_seed
+                if threads is not None:
+                    options["threads"] = threads
+                result = execute(max_time, instance=solver_instance,
+                                 finalization_heuristics=False, **options)
                 if not isinstance(result, ColumnGenerationExecutionResult):
                     raise TypeError("CG must return ColumnGenerationExecutionResult")
             except Exception as error:
@@ -284,6 +317,15 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
             stream.flush()
             iteration_stream.flush()
             phase_stream.flush()
+            if pool_stream is not None:
+                pool_stream.write(json.dumps(dict(
+                    instance=solver_instance, settings=asdict(pool_options),
+                    random_seed=random_seed, threads=threads, max_time_s=max_time,
+                    python=sys.version, platform=platform.platform(),
+                    cplex=getattr(sys.modules.get("cplex"), "__version__", None),
+                    sha256=pool_sources,
+                    result=asdict(result)), allow_nan=False) + "\n")
+                pool_stream.flush()
             if trace_writer is not None:
                 trace_writer.write_trace_record(result)
     if run_paver_after:
@@ -311,6 +353,15 @@ def main(argv=None):
                         help="Export all 44 diagnostic fields instead of the default 24.")
     parser.add_argument("--expected-count", type=int, default=None,
                         help="Optional row-count assertion; by default all CSV rows are executed.")
+    parser.add_argument("--pool-mode", choices=("off", "passive", "populate"), default="off")
+    parser.add_argument("--pool-columns", type=int, default=5)
+    parser.add_argument("--pool-capacity", type=int, default=20)
+    parser.add_argument("--pool-intensity", type=int)
+    parser.add_argument("--populate-time", type=float, default=1.0)
+    parser.add_argument("--populate-ratio", type=float, default=1.0)
+    parser.add_argument("--populate-limit", type=int, default=20)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--threads", type=int)
     paver_group = parser.add_mutually_exclusive_group()
     paver_group.add_argument("--paver", dest="run_paver", action="store_true",
                              help="Run PAVER after the CSV/trace are generated (default).")
@@ -322,16 +373,29 @@ def main(argv=None):
     parser.add_argument("--paver-output", default=None,
                         help="Directory for the PAVER HTML report.")
     args = parser.parse_args(argv)
+    pool_options = None
+    if args.pool_mode != "off":
+        from models.column_generation.solution_pool import PricingPoolOptions
+        try:
+            pool_options = PricingPoolOptions(
+                mode=args.pool_mode, max_columns=args.pool_columns,
+                capacity=args.pool_capacity, intensity=args.pool_intensity,
+                populate_time_s=args.populate_time, populate_ratio=args.populate_ratio,
+                populate_limit=args.populate_limit)
+        except ValueError as error:
+            parser.error(str(error))
+    if args.seed is not None and args.seed < 0 or args.threads is not None and args.threads < 1:
+        parser.error("seed must be nonnegative and threads must be positive")
     source = Path(args.input).resolve()
     output_path, trace_path = _resolve_output_paths(
         args.output, args.trace, args.run_paver,
     )
     try:
-        _validate_distinct_paths(source, output_path, trace_path)
+        _validate_distinct_paths(source, output_path, trace_path, pool_options is not None)
     except ValueError as error:
         parser.error(str(error))
 
-    output_targets = _output_targets(output_path, trace_path)
+    output_targets = _output_targets(output_path, trace_path, pool_options is not None)
     existing_outputs = [path for path in output_targets if path.exists()]
     overwrite = False
     if existing_outputs:
@@ -341,12 +405,20 @@ def main(argv=None):
         overwrite = True
 
     try:
+        optional_settings = {}
+        if pool_options is not None:
+            optional_settings["pool_options"] = pool_options
+        if args.seed is not None:
+            optional_settings["random_seed"] = args.seed
+        if args.threads is not None:
+            optional_settings["threads"] = args.threads
         output = run_benchmark(args.input, output_path, max_time=args.time,
                                expected_count=args.expected_count, trace_path=trace_path,
                                run_paver_after=args.run_paver,
                                paver_path=args.paver_path,
                                paver_output=args.paver_output,
-                               overwrite=overwrite, detailed_csv=args.detailed_csv)
+                               overwrite=overwrite, detailed_csv=args.detailed_csv,
+                               **optional_settings)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     print(output)

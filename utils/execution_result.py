@@ -30,6 +30,16 @@ class ColumnGenerationMetrics:
     master_solve_time_s: float = 0.0
     pricing_build_time_s: float = 0.0
     pricing_solve_time_s: float = 0.0
+    pool_search_time_s: float = 0.0
+    pool_extract_time_s: float = 0.0
+    pool_calls: int = 0
+    pool_examined: int = 0
+    pool_useful_extra: int = 0
+    pool_extra_columns: int = 0
+    pool_read_errors: int = 0
+    pool_size: int = 0
+    lp_pool_size: Optional[int] = None
+    integer_pool_size: Optional[int] = None
 
 
 @dataclass
@@ -68,6 +78,18 @@ class ColumnGenerationIteration:
     stop_reason: Optional[str] = None
     pricing_calls: int = 0
     pricing_phase2_calls: int = 0
+    pool_search_time_s: float = 0.0
+    pool_extract_time_s: float = 0.0
+    pool_calls: int = 0
+    pool_examined: int = 0
+    pool_useful_extra: int = 0
+    pool_extra_columns: int = 0
+    pool_read_errors: int = 0
+    pool_empty: int = 0
+    pool_nonpositive: int = 0
+    pool_duplicates: int = 0
+    pool_limited: int = 0
+    pool_raw_status: Optional[int] = None
     snapshot_time_s: Optional[float] = field(default=None, repr=False, compare=False)
 
 
@@ -90,6 +112,8 @@ class ColumnGenerationDiagnostics:
     active_phase: Optional[str] = None
     snapshot_time_s: Optional[float] = field(default=None, repr=False, compare=False)
     active_component: Optional[str] = None
+    pool_raw_status: Optional[int] = None
+    pool_last_error: Optional[str] = None
 
 
 @dataclass

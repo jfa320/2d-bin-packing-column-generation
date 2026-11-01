@@ -1,6 +1,7 @@
 import multiprocessing
 import math
 import time
+import config
 from queue import Empty
 from dataclasses import replace
 from utils.execution_result import (
@@ -20,6 +21,10 @@ from models.column_generation.master_problem import (
 )
 from models.column_generation.slave_problem import (
     IncrementalPricingModel, create_slave_model, solve_slave_model,
+)
+from models.column_generation.solution_pool import (
+    PricingGeometry, PricingPoolOptions, candidate_to_slice,
+    collect_pricing_extras, slice_master_key,
 )
 from models.column_generation.orchestrator_services import (
     calculate_slice_height,
@@ -204,10 +209,20 @@ class _CGProgress:
         self.snapshot()
 
     def record_column(self, pool_size):
-        self.metrics = replace(self.metrics, generated_columns=self.metrics.generated_columns + 1)
+        self.metrics = replace(self.metrics, generated_columns=self.metrics.generated_columns + 1,
+                               pool_size=pool_size)
         if self.current_iteration is not None:
             self.current_iteration.generated_columns += 1
             self.current_iteration.pool_after = pool_size
+        self.snapshot()
+
+    def record_pool(self, counts):
+        for field, count in counts.items():
+            if hasattr(self.metrics, field):
+                setattr(self.metrics, field, getattr(self.metrics, field) + count)
+            if self.current_iteration is not None:
+                setattr(self.current_iteration, field,
+                        getattr(self.current_iteration, field) + count)
         self.snapshot()
 
     def start_component(self, name, *, pricing_stage=None):
@@ -394,13 +409,49 @@ class _CGProgress:
         self.snapshot()
 
 
-def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto"):
+def _resolve_pool_options(pool_options, use_pricing_pool):
+    """Explicit options override config; False disables even a supplied pool."""
+    if use_pricing_pool is not None and not isinstance(use_pricing_pool, bool):
+        raise ValueError("use_pricing_pool must be a boolean or None")
+    if pool_options is not None and not isinstance(pool_options, PricingPoolOptions):
+        raise ValueError("pool_options must be PricingPoolOptions or None")
+    if use_pricing_pool is False:
+        return None
+    if pool_options is not None:
+        return pool_options
+    enabled = config.USE_PRICING_SOLUTION_POOL if use_pricing_pool is None else use_pricing_pool
+    if enabled:
+        return PricingPoolOptions(max_columns=5, mode="passive", capacity=20, intensity=1)
+    return None
+
+
+def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None):
     """Run CG, reusing base pricing by default and rebuilding enhanced pricing."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
     queue = progress
     practical_enhancements = USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics
     pricing_session = None
     try:
+        for name, value, lower in (("random_seed", random_seed, 0), ("threads", threads, 1)):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)
+                                      or value < lower):
+                raise ValueError(f"{name} must be an integer >= {lower}")
+
+        def configure_search(model):
+            if random_seed is not None:
+                model.parameters.randomseed.set(random_seed)
+            if threads is not None:
+                model.parameters.threads.set(threads)
+
+        pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
+        pool_enabled = pool_options is not None and pool_options.max_columns > 1
+        if pool_enabled:
+            if practical_enhancements:
+                raise ValueError("Solution pool supports only the base algorithm; disable "
+                                 "finalization heuristics or set use_pricing_pool=False "
+                                 "(USE_PRICING_SOLUTION_POOL=False in config.py)")
+            # The evaluated pool variant uses original duals and no second phase.
+            finalization_heuristics = False
         if pricing_mode not in {"auto", "rebuild", "reuse"}:
             raise ValueError(f"Unknown pricing mode: {pricing_mode}")
         if pricing_mode == "auto":
@@ -437,6 +488,9 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
         registry = SliceRegistry(slices)
         slices = registry.slices
+        progress.metrics.pool_size = len(slices)
+        geometry = PricingGeometry(bin_width, bin_height, item_width, item_height, slice_height)
+        master_keys = {slice_master_key(slice_) for slice_ in slices} if pool_enabled else set()
         previous_master_objective = None
         previous_stabilized_dual_prices = None
 
@@ -497,7 +551,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     synchronized_slice_count = len(slices)
 
             # Solve master model
+            configure_search(master_model)
             objective_master, dual_prices, _ = solve_master_model(master_model, queue, manual_interruption, True, initial_time)
+            if objective_master is not None and dual_prices is not None:
+                progress.metrics.lp_pool_size = len(slices)
             progress.end_phase()
             if objective_master is None or dual_prices is None:
                 progress.stop_cg(progress.phase_stop_reason("lp", "lp_failure"))
@@ -515,7 +572,24 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
             progress.start_phase("pricing", original_duals=pricing_dual_prices is dual_prices)
             slave_model = prepare_pricing(pricing_dual_prices)
+            configure_search(slave_model)
+            if pool_enabled:
+                pool_options.configure(slave_model)
+                remaining = max_time - (time.perf_counter() - progress.started)
+                if remaining <= 0:
+                    progress.stop_cg("wall_clock_timeout")
+                    break
+                slave_model.parameters.timelimit.set(remaining)
+            primary_started = time.perf_counter() if pool_enabled else None
             new_slice, objective_value_slave_model, active_variables = solve_slave_model(slave_model, queue, manual_interruption, bin_width, item_height, item_width, slice_height, finalization_heuristics=finalization_heuristics)
+            primary_time_s = time.perf_counter() - primary_started if pool_enabled else 0.0
+            extras = []
+            if (pool_enabled and objective_value_slave_model is not None
+                    and objective_value_slave_model > EPS):
+                extras = collect_pricing_extras(
+                    slave_model, pricing_dual_prices, geometry, master_keys, new_slice,
+                    pool_options, progress, primary_time_s,
+                    lambda: max_time - (time.perf_counter() - progress.started))
             progress.end_phase()
 
             is_duplicate = False
@@ -603,6 +677,26 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 break
 
             # Stop on duplicate slices to avoid cycles
+            if pool_enabled and objective_value_slave_model > EPS:
+                batch = []
+                if new_slice is not None:
+                    key = slice_master_key(new_slice)
+                    is_duplicate = key in master_keys
+                    if not is_duplicate:
+                        batch.append((new_slice, False))
+                batch.extend((candidate_to_slice(candidate, geometry), True) for candidate in extras)
+                if batch:
+                    for slice_, is_extra in batch:
+                        if registry.add(slice_):
+                            master_keys.add(slice_master_key(slice_))
+                            progress.record_column(len(slices))
+                            if is_extra:
+                                progress.record_pool({"pool_extra_columns": 1})
+                    previous_master_objective = objective_master
+                    iteration += 1
+                    progress.end_iteration("column_batch_added", len(slices))
+                    continue
+
             if is_duplicate:
                 reduced_cost_real, item_count, dual_sum = calculate_real_reduced_cost(new_slice, dual_prices, item_width, item_height)
                 print(
@@ -702,7 +796,9 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         progress.ip_started = time.perf_counter()
         progress.metrics = replace(progress.metrics, cg_time_s=progress.ip_started - progress.started)
         progress.start_phase("integer_master")
+        progress.metrics.integer_pool_size = len(slices)
         master_model = create_master_model(max_time, slices, bin_height, bin_width, item_height, item_width, positions_xy_x, positions_xy_y)
+        configure_search(master_model)
         objective_value_slave_model, _, active_master_variables = solve_master_model(master_model, queue, manual_interruption, False, initial_time)
         progress.end_phase()
         progress.finished = True
@@ -789,7 +885,7 @@ def _account_interruption(result, stopped_at, reason):
     ), iterations=iterations, current_iteration=None)
 
 
-def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto"):
+def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None):
     """Execute one instance; auto uses persistent pricing for the base algorithm."""
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
@@ -818,6 +914,9 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
     try:
         if instance is None:
             instance = get_instance(CASE_NAME)
+        # Resolve config in the parent so Windows spawn receives the selected
+        # variant even when the caller changed the flag in memory.
+        pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
         queue = multiprocessing.Queue()
         config_data = ConfigData(
             bin_width=instance["bin_width"], bin_height=instance["bin_height"],
@@ -827,7 +926,9 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             args=(queue, multiprocessing.Value('b', True), max_time, started,
                   config_data, instance["case_name"]),
             kwargs={"return_structured": True, "finalization_heuristics": finalization_heuristics,
-                    "record_iterations": record_iterations, "pricing_mode": pricing_mode})
+                    "record_iterations": record_iterations, "pricing_mode": pricing_mode,
+                    "pool_options": pool_options, "random_seed": random_seed,
+                    "threads": threads, "use_pricing_pool": pool_options is not None})
         process.start()
         def consume(message):
             nonlocal result, completed

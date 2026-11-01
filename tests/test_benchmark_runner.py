@@ -1,6 +1,7 @@
 import csv
 import subprocess
 import sys
+import json
 
 import pytest
 
@@ -36,6 +37,36 @@ def make_result(ip=25, lp=25, termination="Normal", error=None):
     )
 
 
+def test_pool_options_and_reproducible_controls_have_separate_report(tmp_path):
+    from models.column_generation.solution_pool import PricingPoolOptions
+
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "pool.csv"
+    options = PricingPoolOptions()
+
+    def execute(max_time, instance, finalization_heuristics, **kwargs):
+        assert kwargs == dict(pool_options=options, random_seed=2, threads=1)
+        result = make_result()
+        result.metrics.pool_extra_columns = 4
+        return result
+
+    runner.run_benchmark(source, output, execute=execute, pool_options=options,
+                         random_seed=2, threads=1)
+    assert len(read_report(output)) == 1  # Original CSV schema is unchanged.
+    path = tmp_path / "pool_pool.jsonl"
+    row = json.loads(path.read_text())
+    assert row["settings"]["max_columns"] == 5
+    assert row["result"]["metrics"]["pool_extra_columns"] == 4
+    assert row["random_seed"] == 2
+    before = path.read_bytes()
+    # Even if the ordinary outputs are removed, the pool report is protected.
+    for target in (output, *report_paths(output)):
+        target.unlink()
+    with pytest.raises(FileExistsError):
+        runner.run_benchmark(source, output, execute=execute, pool_options=options)
+    assert path.read_bytes() == before
+
+
 def read_report(path, detailed_csv=False):
     with path.open(newline="", encoding="utf-8") as stream:
         reader = csv.DictReader(stream)
@@ -56,10 +87,11 @@ def test_all_csv_rows_order_flags_dimensions_metrics_and_flush(tmp_path):
     output = tmp_path / "report.csv"
     calls = []
 
-    def execute(max_time, instance, finalization_heuristics):
+    def execute(max_time, instance, finalization_heuristics, use_pricing_pool):
         assert len(read_report(output)) == len(calls)
         assert max_time == 12
         assert finalization_heuristics is False
+        assert use_pricing_pool is False
         assert instance == {"case_name": f"sample_{len(calls)}", "bin_width": 20,
                             "bin_height": 10, "item_width": 4, "item_height": 2}
         calls.append(instance)

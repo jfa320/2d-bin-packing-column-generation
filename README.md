@@ -20,6 +20,13 @@ El maestro LP se actualiza incrementalmente; si la actualización falla, se reco
 
 Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. El pricing también se reutiliza en el flujo base. La formulación, la inicialización y las variantes disponibles están en la [guía del algoritmo](docs/algorithm.md).
 
+La variante B está activada con `USE_PRICING_SOLUTION_POOL=True` en `config.py`:
+incorpora hasta cinco columnas útiles por iteración del pool habitual del pricing,
+con capacidad 20 e intensidad 1, sin `populate`. Cambiar el booleano a `False`
+restaura una columna por iteración. B requiere las heurísticas de finalización
+desactivadas; para usar estas, desactivar B. El benchmark conserva su selección
+explícita mediante `--pool-mode` y usa una columna si se omite esa opción.
+
 ## Modelos implementados
 
 | Modelo | Descripción | Uso |
@@ -184,6 +191,11 @@ python benchmark_runner.py --input "benchmark_validation_baseline.csv" --expecte
 El CSV experimental se escribe en `Results\benchmark.csv` y la traza
 compatible con PAVER en `Results\benchmark.trc`. Se recomienda usar nombres
 de salida nuevos para cada corrida.
+
+## Diagnóstico y generación múltiple
+
+El diagnóstico de solution pool y la variante optativa de varias columnas por
+pricing se describen en [docs/pricing_pool.md](docs/pricing_pool.md).
 
 ## Piloto experimental por cuadrantes
 

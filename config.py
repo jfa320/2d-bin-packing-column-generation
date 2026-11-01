@@ -12,6 +12,9 @@ from instances import (
 )
 
 USE_PRACTICAL_CG_ENHANCEMENTS = False
+# Variant B: up to five useful columns from the regular pricing pool, without
+# populate. Set False to restore one column per iteration.
+USE_PRICING_SOLUTION_POOL = True
 INSTANCES = DEFAULT_INSTANCES
 
 

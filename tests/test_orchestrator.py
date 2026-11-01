@@ -50,6 +50,7 @@ def test_case1_structured_phase_metrics(heuristics):
         Queue(), None, 30, time.perf_counter(), ConfigData(6, 4, 2, 3),
         case_name=f"instrumentation_case1_{heuristics}", return_structured=True,
         finalization_heuristics=heuristics,
+        use_pricing_pool=False,
     )
     metrics, diagnostics = result.metrics, result.diagnostics
     assert result.execution.objective_value == 4
