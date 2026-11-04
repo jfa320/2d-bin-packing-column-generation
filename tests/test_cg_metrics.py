@@ -646,11 +646,32 @@ def test_duplicate_retry_time_is_included(stub_run):
     assert not result.diagnostics.lp_convergence_proven
 
 
-def test_stagnation_has_its_own_stop_reason(stub_run, monkeypatch):
-    monkeypatch.setattr(cg, "MAX_STAGNATION", 0)
-    result = stub_run([(make_slice(1), 1.0, ["z_x_1_0"])], finalization_heuristics=True)
-    assert result.diagnostics.cg_stop_reason == "stagnation"
-    assert not result.diagnostics.lp_convergence_proven
+def test_constant_lp_keeps_generating_until_exact_pricing_closes(stub_run, monkeypatch):
+    relaxed_solves = []
+
+    def master(model, queue, manual, relaxed, initial):
+        value = 1.5 if relaxed else 2
+        if relaxed:
+            relaxed_solves.append(value)
+        queue.put({"phase": "lp" if relaxed else "ip", "objective": value,
+                   "state": map_cplex_lp_status(1) if relaxed else map_cplex_mip_status(101),
+                   "raw_status": 1 if relaxed else 101})
+        return value, {"pi": {}} if relaxed else None, []
+
+    monkeypatch.setattr(cg, "solve_master_model", master)
+    # More columns than the removed cutoff allowed, without any LP improvement.
+    count = 1002
+    pricing = [(make_slice(x), 1.0, [f"z_x_{x}_0"]) for x in range(1, count + 1)]
+    pricing.extend([(None, 0.0, []), (None, None, [])])
+    result = stub_run(pricing, finalization_heuristics=True,
+                      use_greedy_pricing=False, record_iterations=False)
+    assert result.execution.termination_status == "Normal"
+    assert relaxed_solves == [1.5] * (count + 1)
+    assert result.metrics.generated_columns == count
+    assert result.metrics.cg_iterations == count + 1
+    assert result.diagnostics.cg_stop_reason == "pricing_converged"
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.convergence_basis == "optimal_pricing"
 
 
 @pytest.mark.parametrize("phase,field", [

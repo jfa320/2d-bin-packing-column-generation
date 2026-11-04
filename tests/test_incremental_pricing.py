@@ -206,7 +206,8 @@ def test_default_base_call_reuses_one_real_model(monkeypatch, heuristics):
     monkeypatch.setattr(cg, "IncrementalPricingModel", ObservedPricing)
     result = orchestrator(
         Queue(), None, 10, time.perf_counter(), ConfigData(6, 4, 2, 3),
-        return_structured=True, finalization_heuristics=heuristics)
+        # This control checks one exact preparation per iteration.
+        return_structured=True, finalization_heuristics=heuristics, use_greedy_pricing=False)
     assert result.execution.termination_status == "Normal"
     assert result.execution.objective_value == 4
     assert len(sessions) == 1

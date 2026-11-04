@@ -14,6 +14,7 @@ from utils.paver_constants import PaverConstants
 from objects import Slice
 
 from models.common.position_generator import generate_positions_xym
+from models.column_generation.greedy_pricing import GreedyPricingHeuristic
 from models.column_generation.master_problem import (
     IncrementalMasterModel,
     create_master_model,
@@ -50,8 +51,6 @@ PAVER = PaverConstants
 
 EPS = 1e-9  # Numeric tolerance
 
-EPS_MASTER = 1e-4
-MAX_STAGNATION = 1000
 MAX_EXTRA = 5
 
 # Experimental dual stabilization. To restore the previous behavior,
@@ -217,6 +216,9 @@ class _CGProgress:
         self.snapshot()
 
     def record_pool(self, counts):
+        self.record_counts(counts)
+
+    def record_counts(self, counts):
         for field, count in counts.items():
             if hasattr(self.metrics, field):
                 setattr(self.metrics, field, getattr(self.metrics, field) + count)
@@ -425,13 +427,23 @@ def _resolve_pool_options(pool_options, use_pricing_pool):
     return None
 
 
-def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None):
+def _resolve_greedy_pricing(use_greedy_pricing):
+    """Follow the runtime config unless the caller explicitly overrides it."""
+    enabled = config.USE_GREEDY_PRICING if use_greedy_pricing is None else use_greedy_pricing
+    if not isinstance(enabled, bool):
+        name = "USE_GREEDY_PRICING" if use_greedy_pricing is None else "use_greedy_pricing"
+        raise ValueError(f"{name} must be a boolean")
+    return enabled
+
+
+def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None, use_greedy_pricing=None):
     """Run CG, reusing base pricing by default and rebuilding enhanced pricing."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
     queue = progress
     practical_enhancements = USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics
     pricing_session = None
     try:
+        use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         for name, value, lower in (("random_seed", random_seed, 0), ("threads", threads, 1)):
             if value is not None and (isinstance(value, bool) or not isinstance(value, int)
                                       or value < lower):
@@ -461,7 +473,6 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         progress.snapshot()
         # Reset the Slice ID counter for each run
         Slice.reset_id_counter()
-        iterations_without_improvement = 0
 
         normalized_problem = ProblemNormalizer().normalize(config_data)
         bin_width = normalized_problem.bin_width
@@ -490,8 +501,9 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         slices = registry.slices
         progress.metrics.pool_size = len(slices)
         geometry = PricingGeometry(bin_width, bin_height, item_width, item_height, slice_height)
-        master_keys = {slice_master_key(slice_) for slice_ in slices} if pool_enabled else set()
-        previous_master_objective = None
+        track_master_keys = pool_enabled or use_greedy_pricing
+        master_keys = {slice_master_key(slice_) for slice_ in slices} if track_master_keys else set()
+        greedy_pricing = None
         previous_stabilized_dual_prices = None
 
         def prepare_pricing(duals, excluded=None):
@@ -565,10 +577,28 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             )
             previous_stabilized_dual_prices = pricing_dual_prices
 
-            if previous_master_objective is None:
-                print("Previous relaxed master objective: None (first iteration)")
-            else:
-                master_improvement = objective_master - previous_master_objective
+            if use_greedy_pricing:
+                progress.start_phase("pricing")
+                progress.record_counts({"greedy_pricing_calls": 1})
+                with timed_component(queue, "greedy_pricing"):
+                    if greedy_pricing is None:
+                        greedy_pricing = GreedyPricingHeuristic(
+                            geometry, positions_xy_x, positions_xy_y)
+                    candidate = greedy_pricing.find_column(dual_prices, master_keys, eps=EPS)
+                if candidate is not None and registry.add(candidate_to_slice(candidate, geometry)):
+                    master_keys.add(candidate.master_key)
+                    progress.record_counts({"greedy_pricing_accepted": 1,
+                                            "exact_pricing_calls_avoided": 1})
+                    progress.record_column(len(slices))
+                    progress.metrics.cg_iterations += 1
+                    if progress.current_iteration is not None:
+                        progress.current_iteration.completed = True
+                    progress.end_phase()
+                    iteration += 1
+                    progress.end_iteration("greedy_column_added", len(slices))
+                    continue
+                progress.record_counts({"greedy_pricing_fallbacks": 1})
+                progress.end_phase()
 
             progress.start_phase("pricing", original_duals=pricing_dual_prices is dual_prices)
             slave_model = prepare_pricing(pricing_dual_prices)
@@ -669,6 +699,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
                     # Add the extra slice if its signature has not been generated before
                     if registry.add(new_extra_slice):
+                        if track_master_keys:
+                            master_keys.add(slice_master_key(new_extra_slice))
                         progress.record_column(len(slices))
 
                     # Exclude the current slave solution to force a new slice in the next iteration
@@ -692,7 +724,6 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                             progress.record_column(len(slices))
                             if is_extra:
                                 progress.record_pool({"pool_extra_columns": 1})
-                    previous_master_objective = objective_master
                     iteration += 1
                     progress.end_iteration("column_batch_added", len(slices))
                     continue
@@ -745,6 +776,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
                     alternative_signature = build_slice_signature(new_alternative_slice)
                     if registry.add(new_alternative_slice):
+                        if track_master_keys:
+                            master_keys.add(slice_master_key(new_alternative_slice))
                         progress.record_column(len(slices))
                         added_alternative = True
                         break
@@ -767,24 +800,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
             # Add the new slice and its signature
             registry.add(new_slice)
+            if track_master_keys:
+                master_keys.add(slice_master_key(new_slice))
             progress.record_column(len(slices))
 
-            # Update the counter of iterations without master improvement
-            if practical_enhancements and previous_master_objective is not None:
-                master_improvement = objective_master - previous_master_objective
-                if abs(master_improvement) <= EPS_MASTER:
-                    iterations_without_improvement += 1
-                else:
-                    iterations_without_improvement = 0
-
-            # Stop if the master does not improve after MAX_STAGNATION iterations
-            if practical_enhancements and iterations_without_improvement >= MAX_STAGNATION:
-                progress.stop_cg("stagnation")
-                print("Stopping because of numeric master stagnation.")
-                break
-
-            # Update the previous master objective for the next iteration
-            previous_master_objective = objective_master
             iteration += 1
             progress.end_iteration("column_added", len(slices))
 
@@ -885,7 +904,7 @@ def _account_interruption(result, stopped_at, reason):
     ), iterations=iterations, current_iteration=None)
 
 
-def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None):
+def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None, use_greedy_pricing=None):
     """Execute one instance; auto uses persistent pricing for the base algorithm."""
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
@@ -916,6 +935,7 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             instance = get_instance(CASE_NAME)
         # Resolve config in the parent so Windows spawn receives the selected
         # variant even when the caller changed the flag in memory.
+        use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
         queue = multiprocessing.Queue()
         config_data = ConfigData(
@@ -928,7 +948,8 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             kwargs={"return_structured": True, "finalization_heuristics": finalization_heuristics,
                     "record_iterations": record_iterations, "pricing_mode": pricing_mode,
                     "pool_options": pool_options, "random_seed": random_seed,
-                    "threads": threads, "use_pricing_pool": pool_options is not None})
+                    "threads": threads, "use_pricing_pool": pool_options is not None,
+                    "use_greedy_pricing": use_greedy_pricing})
         process.start()
         def consume(message):
             nonlocal result, completed

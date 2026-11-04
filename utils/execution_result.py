@@ -40,6 +40,11 @@ class ColumnGenerationMetrics:
     pool_size: int = 0
     lp_pool_size: Optional[int] = None
     integer_pool_size: Optional[int] = None
+    greedy_pricing_calls: int = 0
+    greedy_pricing_accepted: int = 0
+    greedy_pricing_fallbacks: int = 0
+    greedy_pricing_time_s: float = 0.0
+    exact_pricing_calls_avoided: int = 0
 
 
 @dataclass
@@ -90,6 +95,11 @@ class ColumnGenerationIteration:
     pool_duplicates: int = 0
     pool_limited: int = 0
     pool_raw_status: Optional[int] = None
+    greedy_pricing_calls: int = 0
+    greedy_pricing_accepted: int = 0
+    greedy_pricing_fallbacks: int = 0
+    greedy_pricing_time_s: float = 0.0
+    exact_pricing_calls_avoided: int = 0
     snapshot_time_s: Optional[float] = field(default=None, repr=False, compare=False)
 
 

@@ -16,12 +16,21 @@ La resolución se basa en generación de columnas. El problema se descompone en 
 - El modelo esclavo usa la información dual del maestro para generar nuevas rebanadas candidatas que puedan mejorar la solución actual.
 - El proceso se repite mientras aparezcan rebanadas nuevas con potencial de mejora. Al finalizar, el maestro se resuelve en versión entera con las columnas generadas.
 
+Antes del pricing exacto se intenta una columna con un greedy determinístico,
+basado en los duales originales del RMP. Si obtiene una columna nueva y mejorante,
+se agrega y se vuelve al maestro LP; si falla, se ejecuta el pricing exacto.
+La certificación de cierre sigue dependiendo del pricing exacto. La API permite
+desactivar el intento con `use_greedy_pricing=False`. El valor predeterminado
+se controla desde `config.py`: `USE_GREEDY_PRICING=True` lo activa y `False`
+recupera el flujo anterior con pricing exacto. Una opción explícita de la API
+prevalece sobre ese flag.
+
 El maestro LP se actualiza incrementalmente; si la actualización falla, se reconstruye desde el pool. El maestro entero final se construye de nuevo y utiliza únicamente las columnas generadas. Esta resolución no garantiza por sí sola el óptimo entero del problema original.
 
 Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. El pricing también se reutiliza en el flujo base. La formulación, la inicialización y las variantes disponibles están en la [guía del algoritmo](docs/algorithm.md).
 
 La generación múltiple está activada con `USE_PRICING_SOLUTION_POOL=True` en `config.py`:
-incorpora hasta cinco columnas útiles por iteración del pool habitual del pricing,
+incorpora hasta cinco columnas útiles del pool habitual cuando se ejecuta el pricing exacto,
 con capacidad 20 e intensidad 1, sin `populate`. Cambiar el booleano a `False`
 restaura una columna por iteración. La generación múltiple requiere las heurísticas de finalización
 desactivadas. El benchmark conserva su selección

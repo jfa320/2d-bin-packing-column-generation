@@ -170,6 +170,8 @@ def run_cg(monkeypatch):
         layouts.clear()
         # Existing comparisons keep an explicit one-column control.
         kwargs.setdefault("use_pricing_pool", options is not None)
+        # Exercise pool operations even when greedy could find all improvements.
+        kwargs.setdefault("use_greedy_pricing", False)
         result = cg.orchestrator(
             Queue(), None, 3, time.perf_counter(), ConfigData(*dimensions),
             return_structured=True, finalization_heuristics=kwargs.pop("finalization_heuristics", False),
@@ -249,7 +251,7 @@ def test_pool_options_survive_spawn_and_wall_timeout():
         20, instance=dict(case_name="pool_spawn", bin_width=6, bin_height=4,
                          item_width=3, item_height=2),
         finalization_heuristics=False, pool_options=PricingPoolOptions(),
-        random_seed=1, threads=1)
+        random_seed=1, threads=1, use_greedy_pricing=False)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
     assert result.metrics.pool_examined > 0
@@ -339,7 +341,7 @@ def test_config_pool_selection_survives_spawn(monkeypatch, enabled):
     result = execute_with_time_limit(
         20, instance=dict(case_name="pool_config_spawn", bin_width=6, bin_height=4,
                          item_width=3, item_height=2),
-        random_seed=1, threads=1)
+        random_seed=1, threads=1, use_greedy_pricing=False)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
     assert (result.metrics.pool_examined > 0) is enabled

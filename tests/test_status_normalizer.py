@@ -144,6 +144,11 @@ def test_result_contract():
         master_lp_time_s=0.0, pricing_time_s=0.0,
         master_build_time_s=0.0, master_solve_time_s=0.0,
         pricing_build_time_s=0.0, pricing_solve_time_s=0.0,
+        pool_search_time_s=0.0, pool_extract_time_s=0.0,
+        pool_calls=0, pool_examined=0, pool_useful_extra=0, pool_extra_columns=0,
+        pool_read_errors=0, pool_size=0, lp_pool_size=None, integer_pool_size=None,
+        greedy_pricing_calls=0, greedy_pricing_accepted=0, greedy_pricing_fallbacks=0,
+        greedy_pricing_time_s=0.0, exact_pricing_calls_avoided=0,
     )
     assert ColumnGenerationExecutionResult(result, metrics).execution is result
 

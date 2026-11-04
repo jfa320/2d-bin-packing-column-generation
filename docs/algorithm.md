@@ -15,7 +15,10 @@ flowchart TD
     B --> C[Construir maestro LP]
     C --> D[Resolver LP y extraer duales]
     D --> E{¿Hay objetivo y duales válidos?}
-    E -- Sí --> F[Construir o actualizar pricing y resolver]
+    E -- Sí --> M[Intentar pricing greedy con duales originales]
+    M --> N{¿Columna nueva con valor mayor que EPS?}
+    N -- Sí --> H
+    N -- No --> F[Construir o actualizar pricing exacto y resolver]
     E -- No --> K[Finalizar generación]
     F --> G{¿Columna nueva con valor mayor que EPS?}
     G -- Sí --> H[Agregar al pool y actualizar maestro]
@@ -87,6 +90,45 @@ con `EPS=1e-9`. Se detiene si faltan datos LP utilizables, una solución
 factible del pricing o una columna utilizable; también ante valor no positivo
 o una columna positiva duplicada.
 
+### Pricing greedy previo
+
+Por defecto, `GreedyPricingHeuristic` intenta construir una columna antes de
+preparar o resolver el pricing exacto. Usa las mismas posiciones discretas y
+orientaciones, con score `1 - suma(pi de las celdas de la colocación)`. Recalcula
+los scores con los duales originales del RMP, ordena de mayor a menor y desempata
+por `(a,b,t)`. Omite scores no positivos y acepta colocaciones sin solapamientos
+cuyos inicios mantienen `max(b) - min(b) < slice_height`.
+
+La selección completa se valida y su valor se recalcula con
+`candidate_from_values`. Se acepta únicamente si es no vacía, tiene valor mayor
+que `EPS` y es nueva por cantidad de ítems y celdas ocupadas. Se convierte en un
+`Slice`, se registra y se vuelve al RMP sin ejecutar el pricing exacto en esa
+iteración. Si no hay una columna aceptable, se conserva el camino exacto con sus
+opciones de reutilización, pool y finalización. Un fallo del greedy no prueba
+cierre LP y nunca genera un estado óptimo ni una cota de pricing.
+
+`USE_GREEDY_PRICING=True` en `config.py` activa el intento; cambiarlo a `False`
+recupera el flujo anterior. En `orchestrator` y `execute_with_time_limit`,
+`use_greedy_pricing=None` sigue ese flag y un booleano explícito lo sobrescribe.
+Es independiente de `finalization_heuristics` y del solution pool; la selección
+se resuelve en el padre y se transmite explícitamente al proceso hijo. El diagnóstico
+`pricing_pool_preflight.py` lo desactiva para observar el control exacto.
+
+Las métricas estructuradas de ejecución y de cada iteración incluyen
+`greedy_pricing_calls`, `greedy_pricing_accepted`, `greedy_pricing_fallbacks`,
+`greedy_pricing_time_s` y `exact_pricing_calls_avoided`. El tiempo incluye la
+preparación de la geometría en la primera llamada y forma parte de
+`pricing_time_s`; los tiempos `pricing_build_time_s` y `pricing_solve_time_s`
+siguen midiendo el modelo exacto. Una iteración aceptada por el greedy registra
+`greedy_column_added`, sin objetivo, cota ni estado de una resolución exacta.
+`cg_iterations` cuenta también esas iteraciones; su `pricing_calls` vale cero.
+Los contadores están disponibles en `result.metrics` y `result.iterations`;
+los esquemas CSV existentes se conservan.
+
+El greedy puede cambiar las columnas generadas y el entero restringido final.
+Su menor costo por intento no garantiza acelerar la ejecución completa ni
+mejorar la solución entera; esas comparaciones requieren mediciones separadas.
+
 ### Reutilización del pricing
 
 `pricing_mode` se puede pasar a `orchestrator` o `execute_with_time_limit`:
@@ -118,8 +160,9 @@ un LP válido y óptimo y, con sus duales originales, un pricing principal ópti
 con valor no positivo o una cota superior finita menor o igual a `EPS`.
 
 Un incumbente no positivo tras un límite, sin cota suficiente, no demuestra
-convergencia. Tampoco la demuestran un duplicado, un corte por estancamiento,
-la segunda fase con otro objetivo o un pricing con exclusiones.
+convergencia. Tampoco la demuestran un duplicado, la segunda fase con otro
+objetivo o un pricing con exclusiones. La falta de mejora del objetivo del RMP
+no es un criterio de parada de la generación.
 
 El último LP restringido sin cierre no es un upper bound del master completo.
 Un entero inferior a la referencia puede deberse a un pool insuficiente o a
@@ -140,7 +183,9 @@ que se pase `use_pricing_pool=False`.
 
 La generación múltiple requiere las heurísticas de finalización desactivadas: basta el flag global
 `USE_PRACTICAL_CG_ENHANCEMENTS=False` o `finalization_heuristics=False` explícito.
-No se combina con las otras heurísticas; solicitar ambas produce un error.
+No se combina con las heurísticas de finalización; solicitar ambas produce un
+error. El intento greedy previo sí puede usarse junto con el pool del pricing
+exacto.
 
 `PricingPoolOptions(max_columns=5, mode="passive", capacity=20)` configura
 `parameters.mip.pool.intensity` (1 por defecto en este modo) y
@@ -189,7 +234,6 @@ benchmark pasa explícitamente `False`.
 | Duplicado positivo | Hasta 5 intentos de encontrar otra columna nueva positiva. |
 | Valor menor o igual a `EPS` | Hasta 5 intentos extra, con columnas no vacías y valor al menos `-EPS`. |
 | Segunda fase del pricing | Conserva el objetivo original dentro de `1e-8` y maximiza cantidad de ítems. |
-| Estancamiento LP | Detiene tras 1000 iteraciones con mejora absoluta menor o igual a `1e-4`. |
 
 Los no-good cuts excluyen solo el patrón exacto. Para ubicaciones activas
 `A` y universo de variables de ubicación `U`, se agrega:
@@ -215,6 +259,7 @@ el óptimo entero.
 | Normalización, inicialización y firmas | [orchestrator_services.py](../models/column_generation/orchestrator_services.py) |
 | Posiciones para ambas orientaciones | [position_generator.py](../models/common/position_generator.py) |
 | Maestro incremental, LP/IP y duales | [master_problem.py](../models/column_generation/master_problem.py) |
+| Intento greedy previo al pricing exacto | [greedy_pricing.py](../models/column_generation/greedy_pricing.py) |
 | Construcción, reutilización y resolución del pricing | [slave_problem.py](../models/column_generation/slave_problem.py) |
 
 La variante experimental de [generación por cuadrantes](../models/quadrant_column_generation/root_solver.py)

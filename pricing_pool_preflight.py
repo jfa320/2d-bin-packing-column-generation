@@ -167,7 +167,7 @@ def worker(args):
                 result = cg.orchestrator(
                     Sink(), None, args.time, started, config, case_name=args.case,
                     return_structured=True, finalization_heuristics=False,
-                    pricing_mode="reuse", use_pricing_pool=False)
+                    pricing_mode="reuse", use_pricing_pool=False, use_greedy_pricing=False)
         report["baseline"] = dict(metrics=asdict(result.metrics),
                                   diagnostics=asdict(result.diagnostics),
                                   execution=asdict(result.execution))

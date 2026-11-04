@@ -115,7 +115,7 @@ factibilidad geométrica y correspondencia entre los pools LP/IP.
 |---|---|
 | `pricing_converged` | Pricing principal con evidencia suficiente de cierre. |
 | `pricing_nonpositive_unproven` | Incumbente no positivo sin prueba suficiente. |
-| `duplicate` / `stagnation` | Parada por duplicado o criterio heurístico. |
+| `duplicate` | Parada por columna duplicada. |
 | `lp_failure` / `lp_limit` | LP sin objetivo y duales utilizables, por fallo o límite. |
 | `pricing_no_solution` / `pricing_limit` | Pricing sin solución utilizable o limitado sin demostrar cierre. |
 | `pricing_no_column` | Objetivo positivo sin columna utilizable. |

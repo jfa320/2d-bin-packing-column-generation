@@ -12,6 +12,8 @@ from instances import (
 )
 
 USE_PRACTICAL_CG_ENHANCEMENTS = False
+# Try greedy pricing before the exact model. False restores exact-only pricing.
+USE_GREEDY_PRICING = True
 # Variant B: up to five useful columns from the regular pricing pool, without
 # populate. Set False to restore one column per iteration.
 USE_PRICING_SOLUTION_POOL = True
