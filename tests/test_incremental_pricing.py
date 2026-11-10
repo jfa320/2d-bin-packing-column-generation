@@ -219,7 +219,7 @@ def test_phase_two_restores_structure_and_objective_on_same_instance(geometry, m
         baseline, coefficients = structure(model), model.objective.get_linear()
         width, item_height, item_width, _, slice_height = geometry[3:]
         primary = solve_slave_model(model, queue, None, width, item_height,
-                                    item_width, slice_height, finalization_heuristics=False)
+                                    item_width, slice_height, use_pricing_second_phase=False)
         if fail:
             def fail_solve():
                 raise RuntimeError("phase two failed")
@@ -266,7 +266,9 @@ def test_phase_two_prefers_more_items_at_equal_original_value():
 def test_reuse_preserves_normalized_output_feasibility(dimensions):
     value, slices = orchestrator(
         Queue(), None, 10, time.perf_counter(), ConfigData(*dimensions),
-        return_solution=True, finalization_heuristics=False, pricing_mode="reuse")
+        return_solution=True, use_pricing_second_phase=False,
+                              use_pricing_final_enrichment=False,
+                              use_pricing_duplicate_retries=False, pricing_mode="reuse")
     assert value == 4
     validate_feasibility(slices, dimensions[0], dimensions[1], value)
 
@@ -276,7 +278,9 @@ def test_reuse_preserves_normalized_output_feasibility(dimensions):
 def test_pricing_mode_reaches_spawned_solver(pricing_mode, case_name, expected):
     options = {} if pricing_mode is None else {"pricing_mode": pricing_mode}
     result = execute_with_time_limit(
-        20, instance=get_instance(case_name), finalization_heuristics=False,
+        20, instance=get_instance(case_name), use_pricing_second_phase=False,
+                                              use_pricing_final_enrichment=False,
+                                              use_pricing_duplicate_retries=False,
         **options)
     assert result.execution.termination_status == "Normal"
     assert result.execution.objective_value == expected
@@ -307,7 +311,9 @@ def test_default_base_call_reuses_one_real_model(monkeypatch, heuristics):
     result = orchestrator(
         Queue(), None, 10, time.perf_counter(), ConfigData(6, 4, 2, 3),
         # This control checks one exact preparation per iteration.
-        return_structured=True, finalization_heuristics=heuristics, use_greedy_pricing=False)
+        return_structured=True, use_pricing_second_phase=heuristics,
+                                use_pricing_final_enrichment=heuristics,
+                                use_pricing_duplicate_retries=heuristics, use_greedy_pricing=False)
     assert result.execution.termination_status == "Normal"
     assert result.execution.objective_value == 4
     assert len(sessions) == 1

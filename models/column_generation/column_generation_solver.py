@@ -435,10 +435,10 @@ def _resolve_greedy_pricing(use_greedy_pricing):
 
 
 def orchestrator(queue, manual_interruption, max_time, initial_time, config_data,
-                 case_name="case", return_solution=False, return_structured=False,
-                 finalization_heuristics=None, record_iterations=True, pricing_mode="auto",
+                 case_name="case", return_solution=False, return_structured=False, *,
+                 record_iterations=True, pricing_mode="auto",
                  pool_options=None, random_seed=None, threads=None, use_pricing_pool=None,
-                 use_greedy_pricing=None, *, use_pricing_second_phase=None,
+                 use_greedy_pricing=None, use_pricing_second_phase=None,
                  use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
     """Run CG with one persistent pricing instance, including auxiliary searches."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
@@ -446,7 +446,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
     pricing_session = None
     try:
         heuristics = resolve_pricing_heuristics(
-            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase,
+            use_pricing_second_phase=use_pricing_second_phase,
             use_pricing_final_enrichment=use_pricing_final_enrichment,
             use_pricing_duplicate_retries=use_pricing_duplicate_retries)
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
@@ -606,7 +606,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 progress.stop_cg(progress.phase_stop_reason("lp", "lp_failure"))
                 break
             # Independent heuristic flags never enable/disable dual smoothing.
-            if finalization_heuristics is False or not config.USE_DUAL_STABILIZATION:
+            if not config.USE_DUAL_STABILIZATION:
                 pricing_dual_prices = dual_prices
             else:
                 pricing_dual_prices = stabilize_duals(dual_prices, previous_stabilized_dual_prices)
@@ -904,10 +904,10 @@ def _account_interruption(result, stopped_at, reason):
     ), iterations=iterations, current_iteration=None)
 
 
-def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None,
+def execute_with_time_limit(max_time, instance=None, *,
                             record_iterations=True, pricing_mode="auto", pool_options=None,
                             random_seed=None, threads=None, use_pricing_pool=None,
-                            use_greedy_pricing=None, *, use_pricing_second_phase=None,
+                            use_greedy_pricing=None, use_pricing_second_phase=None,
                             use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
     """Execute one instance with a persistent pricing model."""
     started = time.perf_counter()
@@ -942,13 +942,9 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
         heuristics = resolve_pricing_heuristics(
-            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase,
+            use_pricing_second_phase=use_pricing_second_phase,
             use_pricing_final_enrichment=use_pricing_final_enrichment,
             use_pricing_duplicate_retries=use_pricing_duplicate_retries)
-        # Preserve the legacy False bypass of dual stabilization without mixing
-        # the alias with explicit flags in the child.
-        heuristic_kwargs = ({"finalization_heuristics": False}
-                            if finalization_heuristics is False else heuristics.as_kwargs())
         queue = multiprocessing.Queue()
         config_data = ConfigData(
             bin_width=instance["bin_width"], bin_height=instance["bin_height"],
@@ -957,7 +953,7 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             target=orchestrator,
             args=(queue, multiprocessing.Value('b', True), max_time, started,
                   config_data, instance["case_name"]),
-            kwargs={"return_structured": True, **heuristic_kwargs,
+            kwargs={"return_structured": True, **heuristics.as_kwargs(),
                     "record_iterations": record_iterations, "pricing_mode": pricing_mode,
                     "pool_options": pool_options, "random_seed": random_seed,
                     "threads": threads, "use_pricing_pool": pool_options is not None,

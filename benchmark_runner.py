@@ -200,7 +200,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   expected_count=None, trace_path=None, execute=None,
                   run_paver_after=False, paver_path=None, paver_output=None,
                   overwrite=False, detailed_csv=False, pool_options=_DEFAULT_POOL_OPTIONS,
-                  random_seed=None, threads=None, finalization_heuristics=None,
+                  random_seed=None, threads=None,
                   use_pricing_second_phase=None, use_pricing_final_enrichment=None,
                   use_pricing_duplicate_retries=None):
     """Write outputs and return the report Path; execute is a CG test seam.
@@ -216,11 +216,9 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
         raise ValueError("max_time must be positive and finite")
     from models.column_generation.pricing_options import resolve_pricing_heuristics
     heuristics = resolve_pricing_heuristics(
-        finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase,
+        use_pricing_second_phase=use_pricing_second_phase,
         use_pricing_final_enrichment=use_pricing_final_enrichment,
         use_pricing_duplicate_retries=use_pricing_duplicate_retries)
-    heuristic_kwargs = ({"finalization_heuristics": finalization_heuristics}
-                        if finalization_heuristics is not None else heuristics.as_kwargs())
     if pool_options is _DEFAULT_POOL_OPTIONS:
         from models.column_generation.solution_pool import PricingPoolOptions
         pool_options = PricingPoolOptions()
@@ -301,7 +299,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 if threads is not None:
                     options["threads"] = threads
                 result = execute(max_time, instance=solver_instance,
-                                 **heuristic_kwargs, **options)
+                                 **heuristics.as_kwargs(), **options)
                 if not isinstance(result, ColumnGenerationExecutionResult):
                     raise TypeError("CG must return ColumnGenerationExecutionResult")
             except Exception as error:
@@ -334,7 +332,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 pool_stream.write(json.dumps(dict(
                     instance=solver_instance, settings=asdict(pool_options),
                     random_seed=random_seed, threads=threads, max_time_s=max_time,
-                    finalization_heuristics=finalization_heuristics, pricing_mode="reuse",
+                    pricing_mode="reuse",
                     **heuristics.as_kwargs(),
                     python=sys.version, platform=platform.platform(),
                     cplex=getattr(sys.modules.get("cplex"), "__version__", None),
@@ -369,8 +367,6 @@ def main(argv=None):
     parser.add_argument("--expected-count", type=int, default=None,
                         help="Optional row-count assertion; by default all CSV rows are executed.")
     parser.add_argument("--pool-mode", choices=("off", "passive", "populate"), default="passive")
-    parser.add_argument("--finalization-heuristics", action="store_true", default=None,
-                        help="Deprecated alias enabling all three pricing heuristics; cannot be combined with their flags.")
     parser.add_argument("--pricing-second-phase", dest="use_pricing_second_phase",
                         action=argparse.BooleanOptionalAction, default=None,
                         help="Maximize item count while preserving the pricing objective.")
@@ -404,9 +400,6 @@ def main(argv=None):
         "use_pricing_final_enrichment": args.use_pricing_final_enrichment,
         "use_pricing_duplicate_retries": args.use_pricing_duplicate_retries,
     }
-    if args.finalization_heuristics is not None and any(
-            value is not None for value in independent_flags.values()):
-        parser.error("--finalization-heuristics cannot be combined with independent pricing flags")
     pool_options = None
     if args.pool_mode != "off":
         from models.column_generation.solution_pool import PricingPoolOptions
@@ -439,11 +432,7 @@ def main(argv=None):
         overwrite = True
 
     try:
-        optional_settings = {"pool_options": pool_options}
-        if args.finalization_heuristics is not None:
-            optional_settings["finalization_heuristics"] = args.finalization_heuristics
-        else:
-            optional_settings.update(independent_flags)
+        optional_settings = {"pool_options": pool_options, **independent_flags}
         if args.seed is not None:
             optional_settings["random_seed"] = args.seed
         if args.threads is not None:

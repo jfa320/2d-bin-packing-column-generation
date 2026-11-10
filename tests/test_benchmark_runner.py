@@ -45,22 +45,29 @@ def test_pool_options_and_reproducible_controls_have_separate_report(tmp_path, h
     output = tmp_path / "pool.csv"
     options = PricingPoolOptions()
 
-    def execute(max_time, instance, finalization_heuristics, **kwargs):
-        assert finalization_heuristics is heuristics
+    def execute(max_time, instance, use_pricing_second_phase,
+                use_pricing_final_enrichment, use_pricing_duplicate_retries, **kwargs):
+        assert use_pricing_second_phase is heuristics
+        assert use_pricing_final_enrichment is heuristics
+        assert use_pricing_duplicate_retries is heuristics
         assert kwargs == dict(pool_options=options, random_seed=2, threads=1)
         result = make_result()
         result.metrics.pool_extra_columns = 4
         return result
 
     runner.run_benchmark(source, output, execute=execute, pool_options=options,
-                         random_seed=2, threads=1, finalization_heuristics=heuristics)
+                         random_seed=2, threads=1, use_pricing_second_phase=heuristics,
+                                                   use_pricing_final_enrichment=heuristics,
+                                                   use_pricing_duplicate_retries=heuristics)
     assert len(read_report(output)) == 1  # Original CSV schema is unchanged.
     path = tmp_path / "pool_pool.jsonl"
     row = json.loads(path.read_text())
     assert row["settings"]["max_columns"] == 5
     assert row["result"]["metrics"]["pool_extra_columns"] == 4
     assert row["random_seed"] == 2
-    assert row["finalization_heuristics"] is heuristics
+    assert row["use_pricing_second_phase"] is heuristics
+    assert row["use_pricing_final_enrichment"] is heuristics
+    assert row["use_pricing_duplicate_retries"] is heuristics
     assert row["pricing_mode"] == "reuse"
     before = path.read_bytes()
     # Even if the ordinary outputs are removed, the pool report is protected.
@@ -328,8 +335,11 @@ def test_cli_defaults_and_smoke_override(monkeypatch, tmp_path):
                          "paver_output": None, "overwrite": False, "detailed_csv": True,
                          "pool_options": PricingPoolOptions(), "use_pricing_second_phase": None,
                          "use_pricing_final_enrichment": None, "use_pricing_duplicate_retries": None})
-    assert runner.main(["--finalization-heuristics", "--no-paver"]) == 0
-    assert calls[2][1]["finalization_heuristics"] is True
+    assert runner.main(["--pricing-second-phase", "--pricing-final-enrichment",
+                        "--pricing-duplicate-retries", "--no-paver"]) == 0
+    assert calls[2][1]["use_pricing_second_phase"] is True
+    assert calls[2][1]["use_pricing_final_enrichment"] is True
+    assert calls[2][1]["use_pricing_duplicate_retries"] is True
     assert calls[2][1]["pool_options"] == PricingPoolOptions()
     assert runner.main(["--pool-mode", "off", "--no-paver"]) == 0
     assert calls[3][1]["pool_options"] is None
@@ -649,10 +659,8 @@ def test_independent_flags_reach_benchmark_and_jsonl(tmp_path, second, enrichmen
     runner.run_benchmark(source, tmp_path / "report.csv", execute=execute, **settings)
     assert len(calls) == 1
     assert {key: calls[0][key] for key in settings} == settings
-    assert "finalization_heuristics" not in calls[0]
     row = json.loads((tmp_path / "report_pool.jsonl").read_text())
     assert {key: row[key] for key in settings} == settings
-    assert row["finalization_heuristics"] is None
 
 
 def test_cli_independent_flags_and_negative_overrides(monkeypatch, tmp_path):
@@ -666,18 +674,10 @@ def test_cli_independent_flags_and_negative_overrides(monkeypatch, tmp_path):
     assert calls[0]["use_pricing_duplicate_retries"] is True
 
 
-@pytest.mark.parametrize("flag", ["--pricing-second-phase", "--no-pricing-final-enrichment",
-                                  "--pricing-duplicate-retries"])
-def test_cli_rejects_ambiguous_alias_before_writing(monkeypatch, tmp_path, flag):
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit) as error:
-        runner.main(["--finalization-heuristics", flag, "--no-paver"])
-    assert error.value.code == 2
-    assert not list(tmp_path.iterdir())
-
-
-def test_benchmark_rejects_ambiguous_alias_before_writing(tmp_path):
-    with pytest.raises(ValueError, match="cannot be combined"):
+@pytest.mark.parametrize("flag", ["use_pricing_second_phase", "use_pricing_final_enrichment",
+                                  "use_pricing_duplicate_retries"])
+def test_benchmark_rejects_invalid_flag_before_writing(tmp_path, flag):
+    with pytest.raises(ValueError, match=flag):
         runner.run_benchmark(tmp_path / "missing.csv", tmp_path / "out.csv",
-                             finalization_heuristics=False, use_pricing_second_phase=False)
+                             **{flag: "enabled"})
     assert not list(tmp_path.iterdir())

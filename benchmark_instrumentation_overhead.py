@@ -49,12 +49,14 @@ def worker(name, limit, record):
             pass
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        with patch.object(cg, "export_final_layout", return_value=None):
+        with (patch.object(cg, "export_final_layout", return_value=None),
+              patch.object(cg.config, "USE_DUAL_STABILIZATION", False)):
             started = time.perf_counter()
             result = cg.orchestrator(
                 SinkQueue(), None, limit, started, ConfigData(*CASES[name]),
                 case_name=name, return_structured=True,
-                finalization_heuristics=False, record_iterations=record)
+                use_pricing_second_phase=False, use_pricing_final_enrichment=False,
+                use_pricing_duplicate_retries=False, record_iterations=record)
             elapsed = time.perf_counter() - started
     row = {"case": name, "record_iterations": record, "worker_time_s": elapsed,
            "termination_status": result.execution.termination_status,

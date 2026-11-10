@@ -97,11 +97,11 @@ def stub_run(monkeypatch):
             return response
 
         monkeypatch.setattr(cg, "solve_slave_model", slave)
+        for name in ("use_pricing_second_phase", "use_pricing_final_enrichment",
+                     "use_pricing_duplicate_retries"):
+            kwargs.setdefault(name, False)
         return cg.orchestrator(Queue(), SimpleNamespace(value=True), 1000000, 0,
                                ConfigData(4, 4, 1, 1), return_structured=True,
-                               finalization_heuristics=kwargs.pop("finalization_heuristics",
-                                   None if any(key.startswith("use_pricing_") and key != "use_pricing_pool"
-                                               for key in kwargs) else False),
                                pricing_mode=kwargs.pop("pricing_mode", "reuse"),
                                use_pricing_pool=kwargs.pop("use_pricing_pool", False), **kwargs)
 
@@ -160,7 +160,9 @@ def test_reused_pricing_is_built_once_and_update_time_is_recorded(
     monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSession)
     monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", global_enhancements)
     result = stub_run([(make_slice(1), 1, ["z_x_1_0"]), (None, 0, [])],
-                      pricing_mode=pricing_mode, finalization_heuristics=False)
+                      pricing_mode=pricing_mode, use_pricing_second_phase=False,
+                                                 use_pricing_final_enrichment=False,
+                                                 use_pricing_duplicate_retries=False)
     assert result.execution.termination_status == "Normal"
     assert len(sessions) == 1
     assert sessions[0].preparations == 2
@@ -197,7 +199,9 @@ def test_reused_pricing_is_closed_after_preparation_failure(stub_run, monkeypatc
 def test_auto_reuses_pricing_when_enhancements_are_enabled(
         stub_run, monkeypatch, heuristics, global_flag):
     monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", global_flag)
-    result = stub_run([(None, None, [])], pricing_mode="auto", finalization_heuristics=heuristics)
+    result = stub_run([(None, None, [])], pricing_mode="auto", use_pricing_second_phase=heuristics,
+                                                               use_pricing_final_enrichment=heuristics,
+                                                               use_pricing_duplicate_retries=heuristics)
     assert result.execution.termination_status == "Normal"
     assert len(stub_run.pricing_models) == 1
     assert result.metrics.pricing_build_time_s == 1
@@ -275,8 +279,8 @@ def test_seed_duplicate_not_counted(stub_run, monkeypatch):
     assert not result.diagnostics.lp_convergence_proven
 
 
-def test_explicit_false_disables_dual_stabilization(stub_run, monkeypatch):
-    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", True)
+def test_disabled_dual_stabilization_skips_smoothing(stub_run, monkeypatch):
+    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", False)
     stabilize = Mock(side_effect=AssertionError("Stabilization must be disabled"))
     monkeypatch.setattr(cg, "stabilize_duals", stabilize)
     result = stub_run([(None, 0, [])])
@@ -468,7 +472,7 @@ def test_nonoptimal_pricing_preserves_limit_and_feasible_column():
     model.objective.get_linear.return_value = [1]
     progress = cg._CGProgress(Queue(), "stub", cg.time.perf_counter(), True)
     column, value, _ = slave_problem.solve_slave_model(
-        model, progress, None, 4, 1, 1, 1, finalization_heuristics=False)
+        model, progress, None, 4, 1, 1, 1, use_pricing_second_phase=False)
     assert column is not None
     assert value == 1
     assert progress.result().execution.termination_status == "TimeLimit"
@@ -484,7 +488,7 @@ def test_explicit_false_disables_pricing_phase_without_global_change(monkeypatch
     model.solution.get_values.return_value = [1]
     model.variables.get_names.return_value = ["z_x_0_0"]
     model.objective.get_linear.return_value = [1]
-    slave_problem.solve_slave_model(model, Queue(), None, 4, 1, 1, 1, finalization_heuristics=False)
+    slave_problem.solve_slave_model(model, Queue(), None, 4, 1, 1, 1, use_pricing_second_phase=False)
     assert model.solve.call_count == 1
     assert cg.config.USE_PRICING_SECOND_PHASE is True
 
@@ -519,7 +523,9 @@ def test_parent_deadline_drains_partial_results(monkeypatch, incumbent):
     monkeypatch.setattr(cg.multiprocessing, "Queue", StubQueue)
     monkeypatch.setattr(cg.multiprocessing, "Process", lambda **kwargs: process)
     result = cg.execute_with_time_limit(0.2, {"case_name": "stub", "bin_width": 4,
-        "bin_height": 4, "item_width": 1, "item_height": 1}, finalization_heuristics=False)
+        "bin_height": 4, "item_width": 1, "item_height": 1}, use_pricing_second_phase=False,
+                                                             use_pricing_final_enrichment=False,
+                                                             use_pricing_duplicate_retries=False)
     assert result.execution.termination_status == "TimeLimit"
     assert result.execution.objective_value == incumbent
     assert result.metrics.lp_value == 2.5
@@ -647,7 +653,9 @@ def test_second_phase_optimum_cannot_supply_primary_proof():
 
 def test_extra_pricing_time_and_status_are_included(stub_run):
     result = stub_run([(make_slice(1), 0.0, ["z_x_1_0"]), (None, None, [])],
-                      finalization_heuristics=True)
+                      use_pricing_second_phase=True,
+                      use_pricing_final_enrichment=True,
+                      use_pricing_duplicate_retries=True)
     assert result.metrics.pricing_time_s == 6
     assert result.metrics.master_lp_time_s == 3
     assert result.diagnostics.cg_stop_reason == "pricing_converged"
@@ -657,7 +665,9 @@ def test_extra_pricing_time_and_status_are_included(stub_run):
 
 def test_duplicate_retry_time_is_included(stub_run):
     result = stub_run([(make_slice(0), 1.0, ["z_x_0_0"]), (None, 0.0, [])],
-                      finalization_heuristics=True)
+                      use_pricing_second_phase=True,
+                      use_pricing_final_enrichment=True,
+                      use_pricing_duplicate_retries=True)
     assert result.metrics.pricing_time_s == 6
     assert result.diagnostics.cg_stop_reason == "duplicate"
     assert not result.diagnostics.lp_convergence_proven
@@ -680,7 +690,9 @@ def test_constant_lp_keeps_generating_until_exact_pricing_closes(stub_run, monke
     count = 1002
     pricing = [(make_slice(x), 1.0, [f"z_x_{x}_0"]) for x in range(1, count + 1)]
     pricing.extend([(None, 0.0, []), (None, None, [])])
-    result = stub_run(pricing, finalization_heuristics=True,
+    result = stub_run(pricing, use_pricing_second_phase=True,
+                               use_pricing_final_enrichment=True,
+                               use_pricing_duplicate_retries=True,
                       use_greedy_pricing=False, record_iterations=False)
     assert result.execution.termination_status == "Normal"
     assert relaxed_solves == [1.5] * (count + 1)
@@ -828,7 +840,9 @@ def test_failed_master_does_not_reuse_previous_iteration_values(stub_run, monkey
 def test_successful_duplicate_retry_closes_one_attempt_before_continue(stub_run):
     result = stub_run([(make_slice(0), 1.0, ["z_x_0_0"]),
                        (make_slice(1), 1.0, ["z_x_1_0"]), (None, 0.0, [])],
-                      finalization_heuristics=True)
+                      use_pricing_second_phase=True,
+                      use_pricing_final_enrichment=True,
+                      use_pricing_duplicate_retries=True)
     assert [row.iteration for row in result.iterations] == [1, 2]
     first = result.iterations[0]
     assert first.stop_reason == "alternative_column_added"
@@ -920,7 +934,7 @@ def test_pricing_second_phase_has_separate_preparation_and_solve_time(monkeypatc
     model.variables.get_names.return_value = ["z_x_0_0"]
     model.objective.get_linear.return_value = [1]
     slave_problem.solve_slave_model(model, progress, None, 4, 1, 1, 1,
-                                    finalization_heuristics=True)
+                                    use_pricing_second_phase=True)
     progress.end_phase()
     progress.end_iteration("column_added", 1)
     result = progress.result()
@@ -964,7 +978,7 @@ def test_second_phase_failure_is_visible_in_its_iteration(monkeypatch):
     model.variables.get_names.return_value = ["z_x_0_0"]
     model.objective.get_linear.return_value = [1]
     _, objective, _ = slave_problem.solve_slave_model(
-        model, progress, None, 4, 1, 1, 1, finalization_heuristics=True)
+        model, progress, None, 4, 1, 1, 1, use_pricing_second_phase=True)
     assert objective == 1  # The first-phase incumbent remains usable.
     progress.current_iteration.completed = True
     progress.end_phase()
@@ -1046,7 +1060,7 @@ def test_second_phase_postprocessing_error_preserves_actual_solver_state():
     ]
     solver = slave_problem.SlaveSolver(solution_mapper=mapper)
     _, objective, _ = solver.solve(model, progress, None, 4, 1, 1, 1,
-                                   finalization_heuristics=True)
+                                   use_pricing_second_phase=True)
     assert objective == 1
     progress.current_iteration.completed = True
     progress.end_phase()
@@ -1202,10 +1216,9 @@ def test_parent_passes_resolved_independent_flags_to_child(monkeypatch, flags):
                                        item_width=1, item_height=1))
     child_kwargs = factory.call_args.kwargs["kwargs"]
     assert {name: child_kwargs[name] for name in settings} == settings
-    assert "finalization_heuristics" not in child_kwargs
 
 
-def test_ambiguous_flags_fail_before_constructing_pricing(stub_run):
-    result = stub_run([], finalization_heuristics=True, use_pricing_second_phase=True)
-    assert "cannot be combined" in result.execution.error_message
+def test_invalid_flag_fails_before_constructing_pricing(stub_run):
+    result = stub_run([], use_pricing_second_phase="enabled")
+    assert "use_pricing_second_phase must be a boolean or None" in result.execution.error_message
     assert stub_run.master_builds == stub_run.pricing_models == []

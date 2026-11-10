@@ -258,15 +258,6 @@ Por ejemplo, `use_pricing_final_enrichment=True, use_pricing_second_phase=False`
 habilita el enriquecimiento sin ejecutar la segunda fase, tampoco dentro de
 sus búsquedas auxiliares.
 
-La constante `USE_PRACTICAL_CG_ENHANCEMENTS` se eliminó: para migrar una
-configuración general, asignar su valor a los tres flags nuevos. Por los usos
-existentes de la API y del CLI se conserva el alias obsoleto
-`finalization_heuristics=True/False` (y `--finalization-heuristics` para activar
-las tres). Emite `DeprecationWarning` y no puede combinarse con ninguna opción
-independiente explícita, aunque los valores coincidan. Un alias explícito
-selecciona las tres heurísticas sin consultar sus defaults; `None` sigue los
-flags nuevos.
-
 Los no-good cuts excluyen solo el patrón exacto. Para ubicaciones activas
 `A` y universo de variables de ubicación `U`, se agrega:
 
@@ -286,9 +277,8 @@ modelo o terminar una búsqueda auxiliar no crea un certificado adicional.
 
 La estabilización se configura en `config.py` mediante
 `USE_DUAL_STABILIZATION=False`, desactivada por defecto. El factor de suavizado
-es `ALPHA_DUAL_STABILIZATION=0.2`. Los tres flags nuevos no controlan la
-estabilización. El alias `finalization_heuristics=False` conserva su efecto
-histórico de evitar también su aplicación. Estas variantes no garantizan un
+es `ALPHA_DUAL_STABILIZATION=0.2`. Los tres flags de heurísticas no controlan la
+estabilización. Estas variantes no garantizan un
 pool suficiente para el óptimo entero.
 
 ## Implementación

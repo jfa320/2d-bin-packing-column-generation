@@ -173,11 +173,12 @@ def run_cg(monkeypatch):
         kwargs.setdefault("use_pricing_pool", options is not None)
         # Exercise pool operations even when greedy could find all improvements.
         kwargs.setdefault("use_greedy_pricing", False)
+        for name in ("use_pricing_second_phase", "use_pricing_final_enrichment",
+                     "use_pricing_duplicate_retries"):
+            kwargs.setdefault(name, False)
         result = cg.orchestrator(
             Queue(), None, 3, time.perf_counter(), ConfigData(*dimensions),
-            return_structured=True, finalization_heuristics=kwargs.pop("finalization_heuristics",
-                                   None if any(key.startswith("use_pricing_") and key != "use_pricing_pool"
-                                               for key in kwargs) else False),
+            return_structured=True,
             pool_options=options, **kwargs)
         occupied = set()
         for slice_ in layouts[-1] if layouts else []:
@@ -254,7 +255,9 @@ def test_pool_options_survive_spawn_and_wall_timeout(heuristics):
     result = execute_with_time_limit(
         20, instance=dict(case_name="pool_spawn", bin_width=6, bin_height=4,
                          item_width=3, item_height=2),
-        finalization_heuristics=heuristics, pool_options=PricingPoolOptions(),
+        use_pricing_second_phase=heuristics,
+        use_pricing_final_enrichment=heuristics,
+        use_pricing_duplicate_retries=heuristics, pool_options=PricingPoolOptions(),
         random_seed=1, threads=1, use_greedy_pricing=False)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
@@ -277,11 +280,11 @@ def test_populate_error_keeps_primary_solution_and_evidence(run_cg, monkeypatch)
 
 
 @pytest.mark.parametrize("heuristics", [None, True])
-def test_pool_accepts_finalization_heuristics(run_cg, monkeypatch, heuristics):
+def test_pool_accepts_configured_or_explicit_second_phase(run_cg, monkeypatch, heuristics):
     from models.column_generation import column_generation_solver as cg
 
     monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", True)
-    result = run_cg(PricingPoolOptions(), finalization_heuristics=heuristics)
+    result = run_cg(PricingPoolOptions(), use_pricing_second_phase=heuristics)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
     assert result.metrics.pool_examined > 0
@@ -328,7 +331,9 @@ def test_pool_is_saved_before_phase_two_on_one_persistent_instance(run_cg, monke
     monkeypatch.setattr(cg, "refine_slave_model", observed_refine)
     monkeypatch.setattr(IncrementalMasterModel, "add_slice", observed_add)
     options = PricingPoolOptions(mode=mode, populate_time_s=0.2, populate_ratio=10)
-    result = run_cg(options, finalization_heuristics=True)
+    result = run_cg(options, use_pricing_second_phase=True,
+                             use_pricing_final_enrichment=True,
+                             use_pricing_duplicate_retries=True)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
     assert result.diagnostics.lp_convergence_proven
@@ -378,7 +383,9 @@ def test_config_and_explicit_pool_selection(run_cg, monkeypatch, flag, override,
         monkeypatch.setattr(PricingPoolOptions, "configure", check_options)
 
     result = run_cg(options, use_pricing_pool=override,
-                    finalization_heuristics=None if enabled else False)
+                    use_pricing_second_phase=None if enabled else False,
+                    use_pricing_final_enrichment=None if enabled else False,
+                    use_pricing_duplicate_retries=None if enabled else False)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
     assert (result.metrics.pool_examined > 0) is enabled
@@ -517,11 +524,11 @@ def test_all_heuristic_combinations_reuse_and_restore_real_pricing(
     assert result.metrics.pool_calls == 0
 
 
-def test_all_disabled_matches_legacy_and_default_baseline(run_cg):
+def test_all_disabled_matches_configured_baseline(run_cg):
     options = PricingPoolOptions()
     results = [
-        run_cg(options, finalization_heuristics=False),
-        run_cg(options, finalization_heuristics=None),
+        run_cg(options, use_pricing_second_phase=None,
+               use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None),
         run_cg(options, use_pricing_second_phase=False,
                use_pricing_final_enrichment=False, use_pricing_duplicate_retries=False),
     ]
@@ -538,7 +545,7 @@ def test_all_disabled_matches_legacy_and_default_baseline(run_cg):
              for row in result.iterations],
         )
 
-    assert behavior(results[0]) == behavior(results[1]) == behavior(results[2])
+    assert behavior(results[0]) == behavior(results[1])
 
 
 @pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))

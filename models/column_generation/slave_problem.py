@@ -339,11 +339,11 @@ class SlaveSolver:
         self.solution_mapper = solution_mapper or SlaveSolutionMapper()
 
     def solve(self, model, queue, manual_interruption, bin_width, item_height,
-              item_width, slice_height, finalization_heuristics=None, *,
+              item_width, slice_height, *,
               use_pricing_second_phase=None):
         del manual_interruption
         heuristics = resolve_pricing_heuristics(
-            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase)
+            use_pricing_second_phase=use_pricing_second_phase)
         with timed_component(queue, "pricing_solve", pricing_stage="primary"):
             model.solve()
         if not self._report_status(model, queue):
@@ -473,11 +473,11 @@ def create_slave_model(max_time, xy_x, xy_y, dual_values, width_bin,
 
 
 def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
-                      item_width, slice_height, finalization_heuristics=None, *,
+                      item_width, slice_height, *,
                       use_pricing_second_phase=None):
     return _SOLVER.solve(
         model, queue, manual_interruption, bin_width, item_height, item_width,
-        slice_height, finalization_heuristics,
+        slice_height,
         use_pricing_second_phase=use_pricing_second_phase,
     )
 

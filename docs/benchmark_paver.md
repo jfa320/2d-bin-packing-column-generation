@@ -4,8 +4,8 @@ Ejecutar desde la raíz del repositorio, con el entorno Python/CPLEX del
 solver. Para comparar todos los modelos de `main.py`, consultar el
 [README](../README.md#ejecución-de-instancias). `benchmark_runner.py` ejecuta
 solo el modelo propio de generación de columnas. Las heurísticas de finalización
-están desactivadas por defecto; `--finalization-heuristics` las activa sobre el
-mismo pricing persistente. El solution pool está activo en ambos casos.
+están desactivadas por defecto y se controlan mediante tres flags independientes
+sobre el mismo pricing persistente. El solution pool está activo.
 
 ## Ejecución
 
@@ -83,11 +83,8 @@ y `use_pricing_duplicate_retries`; omitir `pool_options` usa el pool habitual y
 pasar `pool_options=None` solicita el control de una columna. El JSONL registra
 los tres valores resueltos y `pricing_mode="reuse"`, además de las opciones del pool.
 
-El alias obsoleto `--finalization-heuristics` activa las tres heurísticas. La API
-conserva `finalization_heuristics=True/False`, con aviso de obsolescencia; no se
-puede mezclar con flags independientes explícitos. El campo histórico del JSONL
-registra el alias recibido o `null` cuando se usan las opciones independientes.
-La [guía del algoritmo](algorithm.md#heurísticas-de-finalización) detalla la migración.
+La [guía del algoritmo](algorithm.md#heurísticas-de-finalización) detalla los
+tres mecanismos y su configuración independiente.
 
 El diagnóstico independiente observa una trayectoria de una columna y
 reproduce sus duales sin incorporar candidatos adicionales al maestro:

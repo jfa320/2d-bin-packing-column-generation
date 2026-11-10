@@ -160,13 +160,15 @@ def worker(args):
     try:
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with (patch.object(cg, "export_final_layout", return_value=None),
+                  patch.object(cg.config, "USE_DUAL_STABILIZATION", False),
                   patch.object(cg, "create_master_model", side_effect=build_master),
                   patch.object(slave, "create_slave_model", side_effect=build_pricing),
                   patch.object(cg, "solve_master_model", side_effect=solve_master),
                   patch.object(cg, "solve_slave_model", side_effect=solve_pricing)):
                 result = cg.orchestrator(
                     Sink(), None, args.time, started, config, case_name=args.case,
-                    return_structured=True, finalization_heuristics=False,
+                    return_structured=True, use_pricing_second_phase=False,
+                    use_pricing_final_enrichment=False, use_pricing_duplicate_retries=False,
                     pricing_mode="reuse", use_pricing_pool=False, use_greedy_pricing=False)
         report["baseline"] = dict(metrics=asdict(result.metrics),
                                   diagnostics=asdict(result.diagnostics),

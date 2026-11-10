@@ -195,10 +195,12 @@ def run_loop(monkeypatch):
         monkeypatch.setattr(cg, "solve_master_model", master)
         monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSession)
         monkeypatch.setattr(cg, "solve_slave_model", exact)
+        for name in ("use_pricing_second_phase", "use_pricing_final_enrichment",
+                     "use_pricing_duplicate_retries"):
+            kwargs.setdefault(name, False)
         return cg.orchestrator(Queue(), None, 60, 0, ConfigData(2, 2, 1, 1),
                                return_structured=True, pricing_mode="reuse",
                                use_pricing_pool=False,
-                               finalization_heuristics=kwargs.pop("finalization_heuristics", False),
                                **kwargs)
     run.events, run.duals, run.models = events, received_duals, exact_models
     run.updates = updates
@@ -292,7 +294,9 @@ def test_greedy_uses_original_duals_even_when_exact_duals_are_stabilized(run_loo
     original = {"pi": {"(0,0)": 1.0}}
     stabilize = Mock(return_value={"pi": {"(0,0)": 100.0, "(1,0)": 100.0}})
     monkeypatch.setattr(cg, "stabilize_duals", stabilize)
-    result = run_loop([original, None], finalization_heuristics=None)
+    result = run_loop([original, None], use_pricing_second_phase=None,
+                                        use_pricing_final_enrichment=None,
+                                        use_pricing_duplicate_retries=None)
     assert stabilize.call_count == 1
     assert run_loop.duals == [original] and run_loop.duals[0] is original
     assert result.metrics.greedy_pricing_accepted == 1
@@ -331,7 +335,9 @@ def test_greedy_option_and_metrics_survive_spawn(enabled, pool):
     result = cg.execute_with_time_limit(
         15, instance=dict(case_name="greedy_spawn", bin_width=6, bin_height=4,
                           item_width=3, item_height=2), use_greedy_pricing=enabled,
-        use_pricing_pool=pool, finalization_heuristics=False, threads=1)
+        use_pricing_pool=pool, use_pricing_second_phase=False,
+                               use_pricing_final_enrichment=False,
+                               use_pricing_duplicate_retries=False, threads=1)
     assert result.execution.termination_status == "Normal"
     assert result.metrics.restricted_integer_master == 4
     assert (result.metrics.greedy_pricing_calls > 0) is enabled
@@ -376,7 +382,9 @@ def test_greedy_config_selection_survives_spawn(monkeypatch, flag, override):
     result = cg.execute_with_time_limit(
         15, instance=dict(case_name="greedy_config_spawn", bin_width=6, bin_height=4,
                           item_width=3, item_height=2), use_greedy_pricing=override,
-        use_pricing_pool=False, finalization_heuristics=False, threads=1)
+        use_pricing_pool=False, use_pricing_second_phase=False,
+                                use_pricing_final_enrichment=False,
+                                use_pricing_duplicate_retries=False, threads=1)
     enabled = flag if override is None else override
     assert result.execution.termination_status == "Normal"
     assert result.metrics.restricted_integer_master == 4
