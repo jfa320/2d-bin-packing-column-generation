@@ -106,6 +106,21 @@ def slice_master_key(slice_):
     return len(items), tuple(sorted(cells))
 
 
+def candidate_from_slice(slice_, duals, geometry, *, reported_objective=None):
+    """Apply the same geometry/current-dual validation to auxiliary columns."""
+    names = []
+    for item in slice_.get_items():
+        rotated = item.get_rotated()
+        width, height = ((geometry.item_height, geometry.item_width) if rotated else
+                         (geometry.item_width, geometry.item_height))
+        if item.get_width() != width or item.get_height() != height:
+            raise InvalidPoolSolution("Auxiliary item dimensions differ from pricing geometry")
+        x, y = item.get_position()
+        names.append(f"z_{'y' if rotated else 'x'}_{x}_{y}")
+    return candidate_from_values(names, [1.0] * len(names), duals, geometry,
+                                 reported_objective=reported_objective)
+
+
 def candidate_from_values(names, values, duals, geometry, *,
                           coefficients=None, reported_objective=None):
     """Validate geometry and recompute the original objective with current duals."""

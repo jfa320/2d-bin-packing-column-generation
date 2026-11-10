@@ -6,10 +6,11 @@ legacy functions at the bottom preserve the original public API.
 
 import cplex
 import math
+from contextlib import contextmanager
 from numbers import Real
 from utils.cg_instrumentation import timed_component
 
-from config import USE_PRACTICAL_CG_ENHANCEMENTS
+from models.column_generation.pricing_options import resolve_pricing_heuristics
 from objects import Item, Slice
 from utils.cplex_helpers import add_constraint_set, add_variables
 from utils.paver_constants import PaverConstants
@@ -177,13 +178,43 @@ class SlaveModelBuilder:
         )
 
 
-class IncrementalPricingModel:
-    """Keep one base pricing model and replace its objective for each dual vector.
+class PricingStateError(RuntimeError):
+    """The persistent pricing cannot safely be solved again."""
 
-    The existing builder remains the reference construction path. Geometry is
-    cached from its variable names once; optional cuts and phase two must use
-    the rebuilding path instead of mutating this session.
+
+@contextmanager
+def temporary_pricing_changes(model, progress=None):
+    """Restore the objective and remove appended rows, including on failure.
+
+    Auxiliary searches may only append rows and change the linear objective.
+    Nested scopes preserve the exclusions of their enclosing search.
     """
+    variables = model.variables.get_num()
+    rows = model.linear_constraints.get_num()
+    coefficients = model.objective.get_linear()
+    sense = model.objective.get_sense()
+    try:
+        yield model
+    finally:
+        with timed_component(progress, "pricing_build"):
+            try:
+                current_rows = model.linear_constraints.get_num()
+                if model.variables.get_num() != variables or current_rows < rows:
+                    raise ValueError("Auxiliary search changed the base pricing structure")
+                if current_rows > rows:
+                    model.linear_constraints.delete(rows, current_rows - 1)
+                model.objective.set_linear(list(enumerate(coefficients)))
+                model.objective.set_sense(sense)
+                if (model.linear_constraints.get_num() != rows
+                        or model.objective.get_linear() != coefficients
+                        or model.objective.get_sense() != sense):
+                    raise ValueError("Temporary pricing changes were not restored")
+            except Exception as error:
+                raise PricingStateError(f"Cannot restore persistent pricing: {error}") from error
+
+
+class IncrementalPricingModel:
+    """Build one pricing instance; update it or fail without rebuilding."""
 
     def __init__(self, max_time, xy_x, xy_y, width_bin, height_item,
                  width_item, height_bin, slice_height, *, model_factory=None):
@@ -196,6 +227,7 @@ class IncrementalPricingModel:
         self._cells_by_variable = ()
         self._shape = None
         self.build_count = 0
+        self._closed = False
 
     def _build(self, dual_values):
         (max_time, xy_x, xy_y, width_bin, height_item,
@@ -234,8 +266,14 @@ class IncrementalPricingModel:
         return model
 
     def prepare(self, dual_values):
+        if self._closed:
+            raise PricingStateError("Pricing session is closed; rebuilding is disabled")
         if self.model is None:
-            return self._build(dual_values)
+            try:
+                return self._build(dual_values)
+            except Exception:
+                self.close()
+                raise
         try:
             shape = (self.model.variables.get_num(), self.model.linear_constraints.get_num())
             if shape != self._shape:
@@ -248,15 +286,16 @@ class IncrementalPricingModel:
             ]
             self.model.objective.set_linear(coefficients)
             self.model.objective.set_sense(self.model.objective.sense.maximize)
+            # No solutions from another dual vector or an auxiliary objective.
+            self.model.solution.pool.delete()
         except Exception as error:
-            # A failed CPLEX update may have applied only some coefficients.
-            # Never solve that object; rebuild with the complete current input.
+            # A partially updated model must never be solved or rebuilt silently.
             self.close()
-            print(f"Incremental pricing update failed; rebuilding the pricing: {error}")
-            return self._build(dual_values)
+            raise PricingStateError(f"Incremental pricing update failed: {error}") from error
         return self.model
 
     def close(self):
+        self._closed = True
         model, self.model = self.model, None
         self._cells_by_variable = ()
         self._shape = None
@@ -300,70 +339,84 @@ class SlaveSolver:
         self.solution_mapper = solution_mapper or SlaveSolutionMapper()
 
     def solve(self, model, queue, manual_interruption, bin_width, item_height,
-              item_width, slice_height, finalization_heuristics=None):
+              item_width, slice_height, finalization_heuristics=None, *,
+              use_pricing_second_phase=None):
         del manual_interruption
+        heuristics = resolve_pricing_heuristics(
+            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase)
         with timed_component(queue, "pricing_solve", pricing_stage="primary"):
             model.solve()
         if not self._report_status(model, queue):
             return None, None, []
 
         phase_1_objective = model.solution.get_objective_value()
-        names = model.variables.get_names()
-        linear_objective = model.objective.get_linear()
-        original_coefficients = dict(zip(names, linear_objective))
         phase_1 = self.solution_mapper.map_solution(
             model, bin_width, item_height, item_width, slice_height
         )
-        phase_1_slice, phase_1_items, phase_1_active, _ = phase_1
+        phase_1_slice, _, phase_1_active, _ = phase_1
         if phase_1_slice is None:
             return None, phase_1_objective, []
 
-        enhancements = (
-            USE_PRACTICAL_CG_ENHANCEMENTS
-            if finalization_heuristics is None else finalization_heuristics
-        )
-        if not enhancements:
-            return phase_1_slice, phase_1_objective, phase_1_active
+        primary = phase_1_slice, phase_1_objective, phase_1_active
+        if not heuristics.second_phase:
+            return primary
+        return self.refine(model, queue, bin_width, item_height, item_width,
+                           slice_height, primary)
+
+    def refine(self, model, queue, bin_width, item_height, item_width, slice_height,
+               primary, remaining_time=None):
+        """Run phase two after the caller has saved the primary solution pool."""
+        phase_1_slice, phase_1_objective, _ = primary
+        if phase_1_slice is None:
+            return primary
+        if remaining_time is not None and remaining_time() <= 0:
+            return primary
+        names = model.variables.get_names()
+        linear_objective = model.objective.get_linear()
+        original_coefficients = dict(zip(names, linear_objective))
 
         phase_2_reported = False
         try:
-            with timed_component(queue, "pricing_build"):
-                model.linear_constraints.add(
-                    lin_expr=[cplex.SparsePair(ind=names, val=linear_objective)],
-                    senses=["G"],
-                    rhs=[phase_1_objective - self.EPS_SECOND_PHASE],
-                    names=["consMaintainOriginalObjective"],
-                )
-                model.objective.set_linear([(name, 0.0) for name in names])
-                model.objective.set_linear([
-                    (name, 1.0) for name in names
-                    if name.startswith("z_x_") or name.startswith("z_y_")
-                ])
-                model.objective.set_sense(model.objective.sense.maximize)
-            with timed_component(queue, "pricing_solve", pricing_stage="phase2"):
-                model.solve()
-            phase_2_feasible = self._report_status(model, queue, pricing_stage="phase2")
-            phase_2_reported = True
-            if phase_2_feasible:
-                phase_2 = self.solution_mapper.map_solution(
-                    model, bin_width, item_height, item_width, slice_height
-                )
-                phase_2_slice, phase_2_items, phase_2_active, raw_solution = phase_2
-                if phase_2_slice is not None:
-                    phase_2_names, phase_2_values = raw_solution
-                    phase_2_objective = self.solution_mapper.calculate_original_objective(
-                        phase_2_names, phase_2_values, original_coefficients
+            with temporary_pricing_changes(model, queue):
+                with timed_component(queue, "pricing_build"):
+                    model.linear_constraints.add(
+                        lin_expr=[cplex.SparsePair(ind=names, val=linear_objective)],
+                        senses=["G"],
+                        rhs=[phase_1_objective - self.EPS_SECOND_PHASE],
+                        names=["consMaintainOriginalObjective"],
                     )
-                    if (
-                        phase_2_objective >= phase_1_objective - self.EPS_SECOND_PHASE
-                        and len(phase_2_items) > len(phase_1_items)
-                    ):
-                        return phase_2_slice, phase_1_objective, phase_2_active
+                    model.objective.set_linear([
+                        (name, float(name.startswith(("z_x_", "z_y_")))) for name in names
+                    ])
+                    model.objective.set_sense(model.objective.sense.maximize)
+                    model.solution.pool.delete()
+                    if remaining_time is not None:
+                        model.parameters.timelimit.set(max(0.0, remaining_time()))
+                with timed_component(queue, "pricing_solve", pricing_stage="phase2"):
+                    model.solve()
+                phase_2_feasible = self._report_status(model, queue, pricing_stage="phase2")
+                phase_2_reported = True
+                if phase_2_feasible:
+                    phase_2 = self.solution_mapper.map_solution(
+                        model, bin_width, item_height, item_width, slice_height
+                    )
+                    phase_2_slice, phase_2_items, phase_2_active, raw_solution = phase_2
+                    if phase_2_slice is not None:
+                        phase_2_names, phase_2_values = raw_solution
+                        phase_2_objective = self.solution_mapper.calculate_original_objective(
+                            phase_2_names, phase_2_values, original_coefficients
+                        )
+                        if (phase_2_objective >= phase_1_objective - self.EPS_SECOND_PHASE
+                                and (phase_1_objective <= 1e-9 or phase_2_objective > 1e-9)
+                                and len(phase_2_items) > len(phase_1_slice.get_items())):
+                            return phase_2_slice, phase_2_objective, phase_2_active
+        except PricingStateError:
+            raise
         except Exception as error:
             queue.put({"phase": "pricing", "pricing_stage": "phase2", "error": str(error),
                        "solve_reported": phase_2_reported})
 
-        return phase_1_slice, phase_1_objective, phase_1_active
+        return primary
 
     @staticmethod
     def _report_status(model, queue, pricing_stage="primary"):
@@ -420,8 +473,16 @@ def create_slave_model(max_time, xy_x, xy_y, dual_values, width_bin,
 
 
 def solve_slave_model(model, queue, manual_interruption, bin_width, item_height,
-                      item_width, slice_height, finalization_heuristics=None):
+                      item_width, slice_height, finalization_heuristics=None, *,
+                      use_pricing_second_phase=None):
     return _SOLVER.solve(
         model, queue, manual_interruption, bin_width, item_height, item_width,
         slice_height, finalization_heuristics,
+        use_pricing_second_phase=use_pricing_second_phase,
     )
+
+
+def refine_slave_model(model, queue, bin_width, item_height, item_width,
+                       slice_height, primary, remaining_time=None):
+    return _SOLVER.refine(model, queue, bin_width, item_height, item_width,
+                          slice_height, primary, remaining_time)

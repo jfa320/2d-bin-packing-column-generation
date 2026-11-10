@@ -27,14 +27,14 @@ prevalece sobre ese flag.
 
 El maestro LP se actualiza incrementalmente; si la actualización falla, se reconstruye desde el pool. El maestro entero final se construye de nuevo y utiliza únicamente las columnas generadas. Esta resolución no garantiza por sí sola el óptimo entero del problema original.
 
-Las heurísticas de alternativas con cortes, exploración de columnas cercanas a cero y segunda fase del pricing están desactivadas por defecto (`USE_PRACTICAL_CG_ENHANCEMENTS=False`). El flujo base se detiene ante un duplicado positivo. El pricing también se reutiliza en el flujo base. La formulación, la inicialización y las variantes disponibles están en la [guía del algoritmo](docs/algorithm.md).
+Las heurísticas del pricing tienen tres flags independientes en `config.py`, todos desactivados por defecto: `USE_PRICING_SECOND_PHASE`, `USE_PRICING_FINAL_ENRICHMENT` y `USE_PRICING_DUPLICATE_RETRIES`. El enriquecimiento final solo ejecuta la segunda fase si su flag está activo. El flujo base se detiene ante un duplicado positivo sin alternativas útiles del pool. El pricing se construye una sola vez y se reutiliza con y sin heurísticas; los cambios auxiliares se restauran sobre el mismo objeto. Las fallas de actualización o restauración se informan sin reconstruir el pricing. La formulación, la configuración de la API y la compatibilidad están en la [guía del algoritmo](docs/algorithm.md#heurísticas-de-finalización).
 
 La generación múltiple está activada con `USE_PRICING_SOLUTION_POOL=True` en `config.py`:
 incorpora hasta cinco columnas útiles del pool habitual cuando se ejecuta el pricing exacto,
 con capacidad 20 e intensidad 1, sin `populate`. Cambiar el booleano a `False`
-restaura una columna por iteración. La generación múltiple requiere las heurísticas de finalización
-desactivadas. El benchmark conserva su selección
-explícita mediante `--pool-mode` y usa una columna si se omite esa opción.
+restaura una columna por iteración. La generación múltiple admite las heurísticas de finalización.
+El benchmark también utiliza el pool habitual por defecto; `--pool-mode off`
+permite ejecutar un control explícito de una columna.
 
 ## Modelos implementados
 
@@ -184,7 +184,7 @@ Desde la raíz del repositorio, ejecutar:
 python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output "Results\benchmark.csv" --trace "Results\benchmark.trc" --time 300
 ```
 
-El runner procesa todas las filas del CSV de entrada y ejecuta sólo generación de columnas con `finalization_heuristics=False`. El parámetro `--time` define el límite de pared compartido por CG y el maestro entero para cada instancia. Un entero `NA` por timeout o interrupción no acredita una solución entera subóptima.
+El runner procesa todas las filas del CSV de entrada y ejecuta sólo generación de columnas. Las heurísticas de finalización están desactivadas por defecto y se habilitan con `--finalization-heuristics`; el pool permanece activo en ambos casos. El parámetro `--time` define el límite de pared compartido por CG y el maestro entero para cada instancia. Un entero `NA` por timeout o interrupción no acredita una solución entera subóptima.
 Al finalizar, ejecuta PAVER usando la ruta configurada en `paver.properties`.
 El informe queda en `Results\benchmark_paver\index.html` cuando la traza se
 llama `Results\benchmark.trc`.

@@ -7,7 +7,8 @@ de referencia del catálogo no interviene en esa cota.
 
 ## Flujo base
 
-`USE_PRACTICAL_CG_ENHANCEMENTS=False` es la configuración predeterminada.
+Los tres flags `USE_PRICING_SECOND_PHASE`, `USE_PRICING_FINAL_ENRICHMENT` y
+`USE_PRICING_DUPLICATE_RETRIES` están en `False` por defecto en `config.py`.
 
 ```mermaid
 flowchart TD
@@ -110,7 +111,7 @@ cierre LP y nunca genera un estado óptimo ni una cota de pricing.
 `USE_GREEDY_PRICING=True` en `config.py` activa el intento; cambiarlo a `False`
 recupera el flujo anterior. En `orchestrator` y `execute_with_time_limit`,
 `use_greedy_pricing=None` sigue ese flag y un booleano explícito lo sobrescribe.
-Es independiente de `finalization_heuristics` y del solution pool; la selección
+Es independiente de las tres heurísticas opcionales y del solution pool; la selección
 se resuelve en el padre y se transmite explícitamente al proceso hijo. El diagnóstico
 `pricing_pool_preflight.py` lo desactiva para observar el control exacto.
 
@@ -135,22 +136,23 @@ mejorar la solución entera; esas comparaciones requieren mediciones separadas.
 
 | Modo | Flujo base | Mejoras prácticas activas |
 |---|---|---|
-| `auto` (predeterminado) | Reutilizar | Reconstruir |
-| `reuse` | Reutilizar | Error |
-| `rebuild` | Reconstruir | Reconstruir |
+| `auto` (predeterminado) | Reutilizar | Reutilizar |
+| `reuse` | Reutilizar | Reutilizar |
 
-`auto` considera el valor efectivo de `finalization_heuristics`; un `False`
-explícito selecciona el flujo base aunque el flag global esté activo.
-`IncrementalPricingModel` conserva la geometría y reemplaza todos los
+`IncrementalPricingModel` construye una sola instancia CPLEX por ejecución,
+conserva la geometría y reemplaza todos los
 coeficientes del objetivo con los duales actuales, incluidos los que pasan a
 cero. Las variables auxiliares de ventana mantienen coeficiente cero.
 
-Cada solve inicia una búsqueda MIP nueva con `advance=0`. Si falla una
-actualización o cambia la cantidad de variables/restricciones, se descarta el
-objeto y se reconstruye. La sesión se libera al terminar CG o ante errores.
+Cada solve inicia una búsqueda MIP nueva con `advance=0`, conservando el mismo
+objeto y su matriz. Segunda fase, reintentos y columnas cercanas a cero también
+usan esa instancia. Las restricciones auxiliares son temporales: al terminar
+cada búsqueda se retiran y se restaura el objetivo, incluso ante excepciones.
+Si falla una actualización, la restauración o la comprobación de la estructura,
+se informa el error y se cierra la sesión sin reconstruirla. El antiguo modo
+`pricing_mode="rebuild"` se rechaza. La sesión se libera al terminar CG.
 Reutilizar la estructura no garantiza idénticas columnas o desempates entre
-versiones del solver. Para comparar modos, pasar `pricing_mode="rebuild"`
-explícitamente; no hay un argumento CLI para esta selección.
+versiones del solver.
 
 ## Cierre LP y solución entera
 
@@ -181,11 +183,11 @@ sin configurar ni extraer el pool. `pool_options=None` sigue ese flag;
 por ejecución. Las opciones explícitas prevalecen sobre el flag global, salvo
 que se pase `use_pricing_pool=False`.
 
-La generación múltiple requiere las heurísticas de finalización desactivadas: basta el flag global
-`USE_PRACTICAL_CG_ENHANCEMENTS=False` o `finalization_heuristics=False` explícito.
-No se combina con las heurísticas de finalización; solicitar ambas produce un
-error. El intento greedy previo sí puede usarse junto con el pool del pricing
-exacto.
+La generación múltiple es compatible con las heurísticas de finalización y el
+intento greedy previo. El incumbente principal y sus alternativas se guardan
+antes de modificar el objetivo para la segunda fase. Las columnas de esa fase
+se validan con los duales originales y se deduplican junto con las del pool;
+el lote respeta `max_columns` y conserva el incumbente principal útil.
 
 `PricingPoolOptions(max_columns=5, mode="passive", capacity=20)` configura
 `parameters.mip.pool.intensity` (1 por defecto en este modo) y
@@ -221,19 +223,49 @@ Ni un pool agotado ni un duplicado certifican cierre. Es posible obtener
 un entero igual a la referencia y terminar con `lp_convergence_proven=False`.
 
 La configuración predeterminada incorpora hasta cinco columnas, con capacidad
-20 e intensidad 1. El benchmark mantiene `--pool-mode off` por defecto;
+20 e intensidad 1. El benchmark usa `--pool-mode passive` por defecto;
 sus opciones están en la [guía de experimentación](benchmark_paver.md#generación-múltiple).
 
 ### Heurísticas de finalización
 
-`finalization_heuristics` sobrescribe `USE_PRACTICAL_CG_ENHANCEMENTS`. El
-benchmark pasa explícitamente `False`.
+Cada mecanismo tiene un flag independiente, desactivado por defecto:
 
-| Mecanismo | Comportamiento con mejoras activas |
-|---|---|
-| Duplicado positivo | Hasta 5 intentos de encontrar otra columna nueva positiva. |
-| Valor menor o igual a `EPS` | Hasta 5 intentos extra, con columnas no vacías y valor al menos `-EPS`. |
-| Segunda fase del pricing | Conserva el objetivo original dentro de `1e-8` y maximiza cantidad de ítems. |
+| Flag de `config.py` | Opción de API | Opción del benchmark |
+|---|---|---|
+| `USE_PRICING_SECOND_PHASE` | `use_pricing_second_phase` | `--pricing-second-phase` |
+| `USE_PRICING_FINAL_ENRICHMENT` | `use_pricing_final_enrichment` | `--pricing-final-enrichment` |
+| `USE_PRICING_DUPLICATE_RETRIES` | `use_pricing_duplicate_retries` | `--pricing-duplicate-retries` |
+
+Las opciones de `orchestrator`, `execute_with_time_limit` y `run_benchmark`
+aceptan `None` para seguir `config.py`; un booleano explícito sobrescribe solo
+su flag. El ejecutor resuelve los valores en el padre y los transmite al hijo,
+incluidos los cambios de configuración hechos en memoria con Windows spawn.
+El CLI admite también las formas `--no-pricing-*` para desactivar cada opción.
+Las ocho combinaciones mantienen la misma configuración de greedy y del pool.
+
+- La segunda fase conserva el objetivo original dentro de `1e-8` y maximiza
+  cantidad de ítems. Su flag se aplica tanto al pricing principal como a las
+  búsquedas de enriquecimiento y de reintentos.
+- El enriquecimiento final actúa cuando el pricing principal devuelve un valor
+  menor o igual a `EPS`: conserva columnas útiles del resultado principal y,
+  si está activa, de la segunda fase; realiza hasta 5 intentos extra con
+  columnas no vacías y valor al menos `-EPS` (`EPS=1e-9`).
+- Ante un duplicado positivo, se aprovechan primero las alternativas del pool;
+  el flag de reintentos permite después hasta 5 búsquedas de otra columna nueva
+  con mejora estrictamente mayor que `EPS`.
+
+Por ejemplo, `use_pricing_final_enrichment=True, use_pricing_second_phase=False`
+habilita el enriquecimiento sin ejecutar la segunda fase, tampoco dentro de
+sus búsquedas auxiliares.
+
+La constante `USE_PRACTICAL_CG_ENHANCEMENTS` se eliminó: para migrar una
+configuración general, asignar su valor a los tres flags nuevos. Por los usos
+existentes de la API y del CLI se conserva el alias obsoleto
+`finalization_heuristics=True/False` (y `--finalization-heuristics` para activar
+las tres). Emite `DeprecationWarning` y no puede combinarse con ninguna opción
+independiente explícita, aunque los valores coincidan. Un alias explícito
+selecciona las tres heurísticas sin consultar sus defaults; `None` sigue los
+flags nuevos.
 
 Los no-good cuts excluyen solo el patrón exacto. Para ubicaciones activas
 `A` y universo de variables de ubicación `U`, se agrega:
@@ -246,10 +278,18 @@ El corte permite subconjuntos y superconjuntos distintos, y omite las
 variables auxiliares de ventana. Se usa en los reintentos y columnas extra;
 el algoritmo base no agrega estos cortes.
 
-La estabilización tiene un flag independiente, `USE_DUAL_STABILIZATION=False`,
-y `ALPHA_DUAL_STABILIZATION=0.2`. Pasar `finalization_heuristics=False` evita
-también su aplicación. Estas variantes no garantizan un pool suficiente para
-el óptimo entero.
+Los cortes y la restricción de segunda fase se agregan y retiran sobre el mismo
+modelo. Los reintentos heredan semilla, hilos y presupuesto restante. Su
+validación geométrica y deduplicación usan el mismo criterio que el pool.
+La evidencia de cierre siempre corresponde al pricing principal: restaurar el
+modelo o terminar una búsqueda auxiliar no crea un certificado adicional.
+
+La estabilización se configura en `config.py` mediante
+`USE_DUAL_STABILIZATION=False`, desactivada por defecto. El factor de suavizado
+es `ALPHA_DUAL_STABILIZATION=0.2`. Los tres flags nuevos no controlan la
+estabilización. El alias `finalization_heuristics=False` conserva su efecto
+histórico de evitar también su aplicación. Estas variantes no garantizan un
+pool suficiente para el óptimo entero.
 
 ## Implementación
 

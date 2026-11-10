@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from itertools import product
 
 import pytest
 
@@ -174,7 +175,9 @@ def run_cg(monkeypatch):
         kwargs.setdefault("use_greedy_pricing", False)
         result = cg.orchestrator(
             Queue(), None, 3, time.perf_counter(), ConfigData(*dimensions),
-            return_structured=True, finalization_heuristics=kwargs.pop("finalization_heuristics", False),
+            return_structured=True, finalization_heuristics=kwargs.pop("finalization_heuristics",
+                                   None if any(key.startswith("use_pricing_") and key != "use_pricing_pool"
+                                               for key in kwargs) else False),
             pool_options=options, **kwargs)
         occupied = set()
         for slice_ in layouts[-1] if layouts else []:
@@ -244,13 +247,14 @@ def test_read_errors_preserve_primary_columns_and_closure(run_cg, monkeypatch):
     assert result.diagnostics.pool_last_error == "unavailable pool"
 
 
-def test_pool_options_survive_spawn_and_wall_timeout():
+@pytest.mark.parametrize("heuristics", [False, True])
+def test_pool_options_survive_spawn_and_wall_timeout(heuristics):
     from models.column_generation.column_generation_solver import execute_with_time_limit
 
     result = execute_with_time_limit(
         20, instance=dict(case_name="pool_spawn", bin_width=6, bin_height=4,
                          item_width=3, item_height=2),
-        finalization_heuristics=False, pool_options=PricingPoolOptions(),
+        finalization_heuristics=heuristics, pool_options=PricingPoolOptions(),
         random_seed=1, threads=1, use_greedy_pricing=False)
     assert not result.execution.error_message
     assert result.metrics.restricted_integer_master == 4
@@ -273,18 +277,68 @@ def test_populate_error_keeps_primary_solution_and_evidence(run_cg, monkeypatch)
 
 
 @pytest.mark.parametrize("heuristics", [None, True])
-def test_pool_rejects_finalization_heuristics(monkeypatch, heuristics):
-    import time
-    from queue import Queue
-    from models.column_generation.column_generation_solver import orchestrator
-    from objects.ConfigData import ConfigData
+def test_pool_accepts_finalization_heuristics(run_cg, monkeypatch, heuristics):
     from models.column_generation import column_generation_solver as cg
 
-    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", True)
-    result = orchestrator(Queue(), None, 1, time.perf_counter(), ConfigData(6, 4, 3, 2),
-                          return_structured=True, pool_options=PricingPoolOptions(),
-                          finalization_heuristics=heuristics)
-    assert "only the base algorithm" in result.execution.error_message
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", True)
+    result = run_cg(PricingPoolOptions(), finalization_heuristics=heuristics)
+    assert not result.execution.error_message
+    assert result.metrics.restricted_integer_master == 4
+    assert result.metrics.pool_examined > 0
+    assert result.diagnostics.pricing_phase2_status.raw_cplex_status == 101
+    assert result.diagnostics.lp_convergence_proven
+
+
+@pytest.mark.parametrize("mode", ["passive", "populate"])
+def test_pool_is_saved_before_phase_two_on_one_persistent_instance(run_cg, monkeypatch, mode):
+    from models.column_generation import column_generation_solver as cg
+    from models.column_generation.slave_problem import IncrementalPricingModel
+    from models.column_generation.master_problem import IncrementalMasterModel
+
+    sessions, models, saved_keys, added_keys = [], [], set(), set()
+    class ObservedPricing(IncrementalPricingModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+        def prepare(self, duals):
+            model = super().prepare(duals)
+            models.append(model)
+            assert not any(name.startswith("nogood_") or name == "consMaintainOriginalObjective"
+                           for name in model.linear_constraints.get_names())
+            return model
+    monkeypatch.setattr(cg, "IncrementalPricingModel", ObservedPricing)
+    collect, refine = cg.collect_pricing_extras, cg.refine_slave_model
+    pool_iterations = set()
+    def observed_collect(model, duals, geometry, known, incumbent, options, progress, *args):
+        pool_iterations.add(progress.current_iteration.iteration)
+        candidates = collect(model, duals, geometry, known, incumbent, options, progress, *args)
+        saved_keys.update(candidate.master_key for candidate in candidates)
+        return candidates
+    def observed_refine(model, progress, w, h, iw, sh, primary, remaining):
+        if progress.pricing_kind == "main" and primary[1] > cg.EPS:
+            assert progress.current_iteration.iteration in pool_iterations
+        result = refine(model, progress, w, h, iw, sh, primary, remaining)
+        assert "consMaintainOriginalObjective" not in model.linear_constraints.get_names()
+        return result
+    add = IncrementalMasterModel.add_slice
+    def observed_add(master, slice_):
+        added_keys.add(cg.slice_master_key(slice_))
+        return add(master, slice_)
+    monkeypatch.setattr(cg, "collect_pricing_extras", observed_collect)
+    monkeypatch.setattr(cg, "refine_slave_model", observed_refine)
+    monkeypatch.setattr(IncrementalMasterModel, "add_slice", observed_add)
+    options = PricingPoolOptions(mode=mode, populate_time_s=0.2, populate_ratio=10)
+    result = run_cg(options, finalization_heuristics=True)
+    assert not result.execution.error_message
+    assert result.metrics.restricted_integer_master == 4
+    assert result.diagnostics.lp_convergence_proven
+    assert len(sessions) == sessions[0].build_count == 1
+    assert len(models) > 1 and all(model is models[0] for model in models)
+    assert result.diagnostics.pricing_phase2_status.raw_cplex_status == 101
+    assert result.diagnostics.pricing_objective <= cg.EPS
+    if mode == "populate":
+        assert saved_keys & added_keys
+        assert result.metrics.pool_extra_columns > 0
 
 
 @pytest.mark.parametrize("flag,override,options,enabled", [
@@ -300,7 +354,7 @@ def test_config_and_explicit_pool_selection(run_cg, monkeypatch, flag, override,
     from models.column_generation import column_generation_solver as cg
 
     monkeypatch.setattr(config, "USE_PRICING_SOLUTION_POOL", flag)
-    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", False)
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", False)
 
     def forbidden(*args, **kwargs):
         pytest.fail("Disabled pool must not be configured or read; B must not use populate/stabilization")
@@ -348,6 +402,20 @@ def test_config_pool_selection_survives_spawn(monkeypatch, enabled):
     assert result.metrics.pool_calls == 0
 
 
+def test_configured_heuristics_survive_spawn_with_pool(monkeypatch):
+    from models.column_generation import column_generation_solver as cg
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", True)
+    result = cg.execute_with_time_limit(
+        15, instance=dict(case_name="heuristics_spawn", bin_width=6, bin_height=4,
+                         item_width=3, item_height=2),
+        pool_options=PricingPoolOptions(), use_greedy_pricing=False, threads=1)
+    assert not result.execution.error_message
+    assert result.metrics.restricted_integer_master == 4
+    assert result.metrics.pool_examined > 0
+    assert result.diagnostics.pricing_phase2_status.raw_cplex_status == 101
+    assert result.diagnostics.lp_convergence_proven
+
+
 def test_partial_batch_update_rebuilds_complete_master(run_cg, monkeypatch):
     from models.column_generation import column_generation_solver as cg
 
@@ -387,3 +455,106 @@ def test_pool_component_is_accounted_when_external_monitor_interrupts():
     assert stopped.metrics.pricing_time_s == 2
     assert stopped.metrics.pool_calls == 1
     assert not stopped.diagnostics.lp_convergence_proven
+
+
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+@pytest.mark.parametrize("pool", [False, True])
+def test_all_heuristic_combinations_reuse_and_restore_real_pricing(
+        run_cg, monkeypatch, second, enrichment, retries, pool):
+    from models.column_generation import column_generation_solver as cg
+    from models.column_generation.slave_problem import IncrementalPricingModel
+
+    sessions, models, refinements = [], [], []
+
+    def state(model):
+        return (model.variables.get_names(), model.linear_constraints.get_names(),
+                model.objective.get_linear(), model.objective.get_sense())
+
+    class ObservedPricing(IncrementalPricingModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+
+        def prepare(self, duals):
+            model = super().prepare(duals)
+            models.append(model)
+            self.expected_state = state(model)
+            assert not any(name.startswith("nogood_") or name in (
+                "consMaintainOriginalObjective", "consNonEmptySlice")
+                           for name in model.linear_constraints.get_names())
+            return model
+
+        def close(self):
+            if self.model is not None:
+                assert state(self.model) == self.expected_state
+            super().close()
+
+    refine = cg.refine_slave_model
+
+    def observed_refine(model, progress, *args):
+        before = state(model)
+        refinements.append(progress.pricing_kind)
+        result = refine(model, progress, *args)
+        assert state(model) == before
+        return result
+
+    monkeypatch.setattr(cg, "IncrementalPricingModel", ObservedPricing)
+    monkeypatch.setattr(cg, "refine_slave_model", observed_refine)
+    result = run_cg(PricingPoolOptions() if pool else None,
+                    use_pricing_second_phase=second,
+                    use_pricing_final_enrichment=enrichment,
+                    use_pricing_duplicate_retries=retries)
+    assert not result.execution.error_message
+    assert result.metrics.restricted_integer_master == result.metrics.lp_value == 4
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.convergence_basis == "optimal_pricing"
+    assert len(sessions) == sessions[0].build_count == 1
+    assert all(model is models[0] for model in models)
+    assert bool(refinements) is second
+    assert ("extra" in refinements) is (second and enrichment)
+    assert (result.diagnostics.auxiliary_pricing_status.raw_cplex_status is not None) is enrichment
+    assert (result.metrics.pool_examined > 0) is pool
+    assert result.metrics.pool_calls == 0
+
+
+def test_all_disabled_matches_legacy_and_default_baseline(run_cg):
+    options = PricingPoolOptions()
+    results = [
+        run_cg(options, finalization_heuristics=False),
+        run_cg(options, finalization_heuristics=None),
+        run_cg(options, use_pricing_second_phase=False,
+               use_pricing_final_enrichment=False, use_pricing_duplicate_retries=False),
+    ]
+
+    def behavior(result):
+        assert not result.execution.error_message
+        return (
+            result.execution.objective_value, result.execution.termination_status,
+            result.diagnostics.lp_convergence_proven, result.diagnostics.convergence_basis,
+            result.diagnostics.cg_stop_reason, result.metrics.lp_value,
+            result.metrics.generated_columns, result.metrics.pool_size,
+            [(row.lp_value, row.pricing_objective, row.pricing_best_bound,
+              row.generated_columns, row.stop_reason, row.pricing_phase2_calls)
+             for row in result.iterations],
+        )
+
+    assert behavior(results[0]) == behavior(results[1]) == behavior(results[2])
+
+
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+def test_independent_runtime_config_survives_spawn(monkeypatch, second, enrichment, retries):
+    from models.column_generation import column_generation_solver as cg
+
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", second)
+    monkeypatch.setattr(cg.config, "USE_PRICING_FINAL_ENRICHMENT", enrichment)
+    monkeypatch.setattr(cg.config, "USE_PRICING_DUPLICATE_RETRIES", retries)
+    result = cg.execute_with_time_limit(
+        15, instance=dict(case_name="independent_flags_spawn", bin_width=6, bin_height=4,
+                          item_width=3, item_height=2),
+        use_greedy_pricing=False, pool_options=PricingPoolOptions(), threads=1, random_seed=1)
+    assert not result.execution.error_message
+    assert result.metrics.restricted_integer_master == result.metrics.lp_value == 4
+    assert result.diagnostics.lp_convergence_proven
+    assert any(row.pricing_phase2_calls for row in result.iterations) is second
+    assert (result.diagnostics.auxiliary_pricing_status.raw_cplex_status is not None) is enrichment
+    assert result.metrics.pool_examined > 0

@@ -1,6 +1,7 @@
 from queue import Queue, Empty
 from types import SimpleNamespace
 from unittest.mock import Mock
+from itertools import product
 
 import pytest
 
@@ -35,9 +36,20 @@ def stub_run(monkeypatch):
         master_builds.append(args[1])
         return object()
 
-    def build_slave(*args):
-        clock[0] += 1
-        return object()
+    class PricingSessionStub:
+        def __init__(self, *args):
+            self.model = Mock()
+            self.model.variables.get_num.return_value = 0
+            self.model.linear_constraints.get_num.return_value = 0
+            self.model.objective.get_linear.return_value = []
+            self.model.objective.get_sense.return_value = -1
+
+        def prepare(self, duals):
+            clock[0] += 1
+            return self.model
+
+        def close(self):
+            pass
 
     class IncrementalMasterStub:
         def __init__(self, model, slices, height_bin, width_bin):
@@ -50,7 +62,12 @@ def stub_run(monkeypatch):
             return True
 
     monkeypatch.setattr(cg, "create_master_model", build_master)
-    monkeypatch.setattr(cg, "create_slave_model", build_slave)
+    monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSessionStub)
+    # This fixture tests accounting with synthetic columns/duals, not geometry.
+    monkeypatch.setattr(cg, "refine_slave_model", lambda model, queue, w, h, iw, sh, primary, remaining: primary)
+    monkeypatch.setattr(cg, "candidate_from_slice", lambda slice_, duals, geometry, reported_objective=None:
+                        SimpleNamespace(value=reported_objective if reported_objective is not None else 1.0,
+                                        master_key=cg.slice_master_key(slice_)))
     monkeypatch.setattr(cg, "IncrementalMasterModel", IncrementalMasterStub)
     lp_values = iter([1.5, 2.5, 3.5])
 
@@ -68,7 +85,7 @@ def stub_run(monkeypatch):
     def run(pricing, pricing_raw_status=101, pricing_best_bound=None, **kwargs):
         responses = iter(pricing)
 
-        def slave(model, queue, manual, *args, finalization_heuristics=None):
+        def slave(model, queue, manual, *args, use_pricing_second_phase=None):
             pricing_models.append(model)
             with cg.timed_component(queue, "pricing_solve"):
                 clock[0] += 2
@@ -80,11 +97,12 @@ def stub_run(monkeypatch):
             return response
 
         monkeypatch.setattr(cg, "solve_slave_model", slave)
-        return cg.orchestrator(Queue(), SimpleNamespace(value=True), 60, 0,
+        return cg.orchestrator(Queue(), SimpleNamespace(value=True), 1000000, 0,
                                ConfigData(4, 4, 1, 1), return_structured=True,
-                               finalization_heuristics=kwargs.pop("finalization_heuristics", False),
-                               # Existing timing fixtures exercise the rebuild baseline.
-                               pricing_mode=kwargs.pop("pricing_mode", "rebuild"),
+                               finalization_heuristics=kwargs.pop("finalization_heuristics",
+                                   None if any(key.startswith("use_pricing_") and key != "use_pricing_pool"
+                                               for key in kwargs) else False),
+                               pricing_mode=kwargs.pop("pricing_mode", "reuse"),
                                use_pricing_pool=kwargs.pop("use_pricing_pool", False), **kwargs)
 
     run.master_builds = master_builds
@@ -126,7 +144,7 @@ def test_reused_pricing_is_built_once_and_update_time_is_recorded(
 
     class PricingSession:
         def __init__(self, *args):
-            self.model = object()
+            self.model = Mock()
             self.preparations = 0
             self.closes = 0
             sessions.append(self)
@@ -140,7 +158,7 @@ def test_reused_pricing_is_built_once_and_update_time_is_recorded(
             self.closes += 1
 
     monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSession)
-    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", global_enhancements)
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", global_enhancements)
     result = stub_run([(make_slice(1), 1, ["z_x_1_0"]), (None, 0, [])],
                       pricing_mode=pricing_mode, finalization_heuristics=False)
     assert result.execution.termination_status == "Normal"
@@ -176,20 +194,18 @@ def test_reused_pricing_is_closed_after_preparation_failure(stub_run, monkeypatc
 
 
 @pytest.mark.parametrize("heuristics,global_flag", [(True, False), (None, True)])
-def test_auto_keeps_rebuilding_when_enhancements_are_enabled(
+def test_auto_reuses_pricing_when_enhancements_are_enabled(
         stub_run, monkeypatch, heuristics, global_flag):
-    session = Mock(side_effect=AssertionError("Enhanced pricing must use fresh models"))
-    monkeypatch.setattr(cg, "IncrementalPricingModel", session)
-    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", global_flag)
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", global_flag)
     result = stub_run([(None, None, [])], pricing_mode="auto", finalization_heuristics=heuristics)
     assert result.execution.termination_status == "Normal"
     assert len(stub_run.pricing_models) == 1
-    session.assert_not_called()
+    assert result.metrics.pricing_build_time_s == 1
 
 
 @pytest.mark.parametrize("options,message", [
     ({"pricing_mode": "unknown"}, "Unknown pricing mode"),
-    ({"pricing_mode": "reuse", "finalization_heuristics": True}, "only the base algorithm"),
+    ({"pricing_mode": "rebuild"}, "Pricing reconstruction is disabled"),
 ])
 def test_invalid_pricing_mode_is_reported_before_any_solve(stub_run, options, message):
     result = stub_run([], **options)
@@ -249,17 +265,18 @@ def test_failed_incremental_update_rebuilds_master(stub_run, monkeypatch, capsys
 
 
 def test_seed_duplicate_not_counted(stub_run, monkeypatch):
-    monkeypatch.setattr(cg, "USE_PRACTICAL_CG_ENHANCEMENTS", True)
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", True)
     result = stub_run([(make_slice(0), 1, ["z_x_0_0"])])
     assert result.metrics.generated_columns == 0
     assert result.metrics.cg_iterations == 1
     assert result.execution.termination_status == "Normal"
-    assert cg.USE_PRACTICAL_CG_ENHANCEMENTS is True
+    assert cg.config.USE_PRICING_SECOND_PHASE is True
     assert result.diagnostics.cg_stop_reason == "duplicate"
     assert not result.diagnostics.lp_convergence_proven
 
 
 def test_explicit_false_disables_dual_stabilization(stub_run, monkeypatch):
+    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", True)
     stabilize = Mock(side_effect=AssertionError("Stabilization must be disabled"))
     monkeypatch.setattr(cg, "stabilize_duals", stabilize)
     result = stub_run([(None, 0, [])])
@@ -459,7 +476,7 @@ def test_nonoptimal_pricing_preserves_limit_and_feasible_column():
 
 
 def test_explicit_false_disables_pricing_phase_without_global_change(monkeypatch):
-    monkeypatch.setattr(slave_problem, "USE_PRACTICAL_CG_ENHANCEMENTS", True)
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", True)
     model = Mock()
     model.solution.get_status.return_value = 101
     model.solution.is_primal_feasible.return_value = True
@@ -469,7 +486,7 @@ def test_explicit_false_disables_pricing_phase_without_global_change(monkeypatch
     model.objective.get_linear.return_value = [1]
     slave_problem.solve_slave_model(model, Queue(), None, 4, 1, 1, 1, finalization_heuristics=False)
     assert model.solve.call_count == 1
-    assert slave_problem.USE_PRACTICAL_CG_ENHANCEMENTS is True
+    assert cg.config.USE_PRICING_SECOND_PHASE is True
 
 
 @pytest.mark.parametrize("incumbent", [None, 2])
@@ -888,6 +905,8 @@ def test_pricing_second_phase_has_separate_preparation_and_solve_time(monkeypatc
     progress.begin_iteration(1)
     progress.start_phase("pricing")
     model = Mock()
+    model.variables.get_num.return_value = 1
+    model.linear_constraints.get_num.return_value = 0
     def solve():
         clock[0] += 2
     def prepare(**kwargs):
@@ -935,6 +954,8 @@ def test_second_phase_failure_is_visible_in_its_iteration(monkeypatch):
     progress.begin_iteration(1)
     progress.start_phase("pricing")
     model = Mock()
+    model.variables.get_num.return_value = 1
+    model.linear_constraints.get_num.return_value = 0
     model.solve.side_effect = [None, RuntimeError("phase2 failed")]
     model.solution.get_status.return_value = 101
     model.solution.is_primal_feasible.return_value = True
@@ -1010,6 +1031,8 @@ def test_second_phase_postprocessing_error_preserves_actual_solver_state():
     progress.begin_iteration(1)
     progress.start_phase("pricing")
     model = Mock()
+    model.variables.get_num.return_value = 1
+    model.linear_constraints.get_num.return_value = 0
     model.solution.get_status.return_value = 101
     model.solution.is_primal_feasible.return_value = True
     model.solution.get_objective_value.return_value = 1
@@ -1054,3 +1077,135 @@ def test_dual_extraction_error_keeps_this_iteration_lp_without_stale_pricing(stu
     assert row.stop_reason == "error"
     assert row.pricing_status.raw_cplex_status is None
     assert row.pricing_objective is None
+
+
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+@pytest.mark.parametrize("raw,bound,proven", [(101, None, True), (107, 1.0, False)])
+def test_independent_enrichment_and_phase_two_preserve_primary_proof(
+        stub_run, monkeypatch, second, enrichment, retries, raw, bound, proven):
+    refined_kinds = []
+
+    def refine(model, progress, w, h, iw, sh, primary, remaining):
+        refined_kinds.append(progress.pricing_kind)
+        progress.put({"phase": "pricing", "pricing_stage": "phase2",
+                      "raw_status": 101, "state": map_cplex_mip_status(101),
+                      "objective": 0.0, "best_bound": 0.0})
+        return primary
+
+    monkeypatch.setattr(cg, "refine_slave_model", refine)
+    result = stub_run([
+        (make_slice(1), 0.0, ["z_x_1_0"]),
+        (make_slice(2), 0.0, ["z_x_2_0"]), (None, None, []),
+    ], pricing_raw_status=raw, pricing_best_bound=bound,
+        use_pricing_second_phase=second, use_pricing_final_enrichment=enrichment,
+        use_pricing_duplicate_retries=retries)
+    assert not result.execution.error_message
+    assert len(stub_run.pricing_models) == (3 if enrichment else 1)
+    assert refined_kinds == (["main"] + (["extra"] if enrichment else []) if second else [])
+    assert result.metrics.generated_columns == (2 if enrichment else 0)
+    assert result.diagnostics.lp_convergence_proven is proven
+    assert result.diagnostics.pricing_status.raw_cplex_status == raw
+    assert result.diagnostics.pricing_objective == 0.0
+    assert result.diagnostics.pricing_best_bound == (0.0 if proven else bound)
+
+
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+def test_independent_duplicate_retries_cannot_certify_lp(
+        stub_run, monkeypatch, second, enrichment, retries):
+    refined_kinds = []
+    monkeypatch.setattr(cg, "refine_slave_model",
+                        lambda model, progress, w, h, iw, sh, primary, remaining:
+                        refined_kinds.append(progress.pricing_kind) or primary)
+    result = stub_run([(make_slice(0), 1.0, ["z_x_0_0"]), (None, 0.0, [])],
+                      use_pricing_second_phase=second,
+                      use_pricing_final_enrichment=enrichment,
+                      use_pricing_duplicate_retries=retries)
+    assert not result.execution.error_message
+    assert len(stub_run.pricing_models) == (2 if retries else 1)
+    assert refined_kinds == (["main"] if second else [])
+    assert result.diagnostics.cg_stop_reason == "duplicate"
+    assert not result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.pricing_objective == 1.0
+    assert result.metrics.generated_columns == 0
+
+
+@pytest.mark.parametrize("kind", ["extra", "duplicate_retry"])
+def test_independent_auxiliary_searches_keep_five_attempt_limit(stub_run, kind):
+    value = 0.0 if kind == "extra" else 1.0
+    response = (make_slice(0), value, ["z_x_0_0"])
+    result = stub_run([response] * 6, use_pricing_second_phase=False,
+                      use_pricing_final_enrichment=kind == "extra",
+                      use_pricing_duplicate_retries=kind == "duplicate_retry")
+    assert not result.execution.error_message
+    assert len(stub_run.pricing_models) == 6
+    assert result.diagnostics.lp_convergence_proven is (kind == "extra")
+
+
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+@pytest.mark.parametrize("stabilization", [False, True])
+def test_independent_flags_do_not_control_dual_stabilization(
+        stub_run, monkeypatch, second, enrichment, retries, stabilization):
+    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", stabilization)
+    stabilize = Mock(side_effect=lambda duals, previous: duals)
+    monkeypatch.setattr(cg, "stabilize_duals", stabilize)
+    result = stub_run([(make_slice(1), 1.0, ["z_x_1_0"]),
+                       (None, 0.0, []), (None, None, [])],
+                      use_pricing_second_phase=second,
+                      use_pricing_final_enrichment=enrichment,
+                      use_pricing_duplicate_retries=retries)
+    assert not result.execution.error_message
+    assert stabilize.call_count == (2 if stabilization else 0)
+
+
+@pytest.mark.parametrize("configured,override,expected", [
+    (False, None, False), (True, None, True),
+    (False, False, False), (False, True, True),
+    (True, False, False), (True, True, True),
+])
+def test_slave_api_respects_independent_second_phase_flag(monkeypatch, configured, override, expected):
+    monkeypatch.setattr(cg.config, "USE_PRICING_SECOND_PHASE", configured)
+    monkeypatch.setattr(cg.config, "USE_PRICING_FINAL_ENRICHMENT", True)
+    monkeypatch.setattr(cg.config, "USE_PRICING_DUPLICATE_RETRIES", True)
+    model = Mock()
+    model.solution.get_status.return_value = 101
+    model.solution.is_primal_feasible.return_value = True
+    model.solution.get_objective_value.return_value = 1.0
+    column = make_slice(0)
+    primary = column, 1.0, ["z_x_0_0"]
+    mapper = Mock()
+    mapper.map_solution.return_value = column, column.get_items(), primary[2], ([], [])
+    solver = slave_problem.SlaveSolver(mapper)
+    solver.refine = Mock(return_value=primary)
+    assert solver.solve(model, Queue(), None, 4, 1, 1, 1,
+                        use_pricing_second_phase=override) == primary
+    model.solve.assert_called_once()
+    assert solver.refine.call_count == int(expected)
+
+
+@pytest.mark.parametrize("flags", product((False, True), repeat=3))
+def test_parent_passes_resolved_independent_flags_to_child(monkeypatch, flags):
+    from models.column_generation.pricing_options import PricingHeuristics
+
+    settings = PricingHeuristics(*flags).as_kwargs()
+    for name, value in settings.items():
+        monkeypatch.setattr(cg.config, name.upper(), value)
+    queue = Mock()
+    queue.get.side_effect = Empty
+    queue.get_nowait.side_effect = Empty
+    process = Mock()
+    process.is_alive.return_value = False
+    process.exitcode = 0
+    factory = Mock(return_value=process)
+    monkeypatch.setattr(cg.multiprocessing, "Queue", lambda: queue)
+    monkeypatch.setattr(cg.multiprocessing, "Process", factory)
+    cg.execute_with_time_limit(10, dict(case_name="flags", bin_width=4, bin_height=4,
+                                       item_width=1, item_height=1))
+    child_kwargs = factory.call_args.kwargs["kwargs"]
+    assert {name: child_kwargs[name] for name in settings} == settings
+    assert "finalization_heuristics" not in child_kwargs
+
+
+def test_ambiguous_flags_fail_before_constructing_pricing(stub_run):
+    result = stub_run([], finalization_heuristics=True, use_pricing_second_phase=True)
+    assert "cannot be combined" in result.execution.error_message
+    assert stub_run.master_builds == stub_run.pricing_models == []

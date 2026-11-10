@@ -11,7 +11,12 @@ from instances import (
     REQUIRED_INSTANCE_FIELDS,
 )
 
-USE_PRACTICAL_CG_ENHANCEMENTS = False
+# Independent optional pricing searches; None in the API follows these defaults.
+USE_PRICING_SECOND_PHASE = False
+USE_PRICING_FINAL_ENRICHMENT = False
+USE_PRICING_DUPLICATE_RETRIES = False
+# Experimental dual smoothing, disabled by default.
+USE_DUAL_STABILIZATION = False
 # Try greedy pricing before the exact model. False restores exact-only pricing.
 USE_GREEDY_PRICING = True
 # Variant B: up to five useful columns from the regular pricing pool, without

@@ -15,24 +15,25 @@ from objects import Slice
 
 from models.common.position_generator import generate_positions_xym
 from models.column_generation.greedy_pricing import GreedyPricingHeuristic
+from models.column_generation.pricing_options import resolve_pricing_heuristics
 from models.column_generation.master_problem import (
     IncrementalMasterModel,
     create_master_model,
     solve_master_model,
 )
 from models.column_generation.slave_problem import (
-    IncrementalPricingModel, create_slave_model, solve_slave_model,
+    IncrementalPricingModel, solve_slave_model, refine_slave_model,
+    temporary_pricing_changes,
 )
 from models.column_generation.solution_pool import (
     PricingGeometry, PricingPoolOptions, candidate_to_slice,
-    collect_pricing_extras, slice_master_key,
+    collect_pricing_extras, slice_master_key, candidate_from_slice,
 )
 from models.column_generation.orchestrator_services import (
     calculate_slice_height,
     calculate_physical_item_bound,
     generate_initial_slices,
     generate_initial_slices_greedy_uniform,
-    build_slice_signature,
     summarize_slice,
     add_no_good_cut,
     add_non_empty_constraint,
@@ -42,7 +43,7 @@ from models.column_generation.orchestrator_services import (
     SliceRegistry,
     ProblemNormalizer,
 )
-from config import CASE_NAME, USE_PRACTICAL_CG_ENHANCEMENTS, get_instance
+from config import CASE_NAME, get_instance
 
 from objects.ConfigData import ConfigData
 
@@ -53,9 +54,6 @@ EPS = 1e-9  # Numeric tolerance
 
 MAX_EXTRA = 5
 
-# Experimental dual stabilization. To restore the previous behavior,
-# keep USE_DUAL_STABILIZATION = False.
-USE_DUAL_STABILIZATION = False
 ALPHA_DUAL_STABILIZATION = 0.2
 
 
@@ -68,7 +66,7 @@ def extract_nonzero_duals(dual_prices, tol=1e-9):
 
 
 def stabilize_duals(current_duals, previous_duals, alpha=ALPHA_DUAL_STABILIZATION):
-    if not USE_DUAL_STABILIZATION or previous_duals is None:
+    if not config.USE_DUAL_STABILIZATION or previous_duals is None:
         return current_duals
 
     keys = set(current_duals.get("pi", {}).keys()) | set(previous_duals.get("pi", {}).keys())
@@ -436,13 +434,21 @@ def _resolve_greedy_pricing(use_greedy_pricing):
     return enabled
 
 
-def orchestrator(queue, manual_interruption, max_time, initial_time, config_data, case_name="case", return_solution=False, return_structured=False, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None, use_greedy_pricing=None):
-    """Run CG, reusing base pricing by default and rebuilding enhanced pricing."""
+def orchestrator(queue, manual_interruption, max_time, initial_time, config_data,
+                 case_name="case", return_solution=False, return_structured=False,
+                 finalization_heuristics=None, record_iterations=True, pricing_mode="auto",
+                 pool_options=None, random_seed=None, threads=None, use_pricing_pool=None,
+                 use_greedy_pricing=None, *, use_pricing_second_phase=None,
+                 use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
+    """Run CG with one persistent pricing instance, including auxiliary searches."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
     queue = progress
-    practical_enhancements = USE_PRACTICAL_CG_ENHANCEMENTS if finalization_heuristics is None else finalization_heuristics
     pricing_session = None
     try:
+        heuristics = resolve_pricing_heuristics(
+            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase,
+            use_pricing_final_enrichment=use_pricing_final_enrichment,
+            use_pricing_duplicate_retries=use_pricing_duplicate_retries)
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         for name, value, lower in (("random_seed", random_seed, 0), ("threads", threads, 1)):
             if value is not None and (isinstance(value, bool) or not isinstance(value, int)
@@ -457,19 +463,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
         pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
         pool_enabled = pool_options is not None and pool_options.max_columns > 1
-        if pool_enabled:
-            if practical_enhancements:
-                raise ValueError("Solution pool supports only the base algorithm; disable "
-                                 "finalization heuristics or set use_pricing_pool=False "
-                                 "(USE_PRICING_SOLUTION_POOL=False in config.py)")
-            # The evaluated pool variant uses original duals and no second phase.
-            finalization_heuristics = False
-        if pricing_mode not in {"auto", "rebuild", "reuse"}:
+        if pricing_mode == "rebuild":
+            raise ValueError("Pricing reconstruction is disabled; use pricing_mode='reuse' or 'auto'")
+        if pricing_mode not in {"auto", "reuse"}:
             raise ValueError(f"Unknown pricing mode: {pricing_mode}")
-        if pricing_mode == "auto":
-            pricing_mode = "rebuild" if practical_enhancements else "reuse"
-        if pricing_mode == "reuse" and practical_enhancements:
-            raise ValueError("Pricing reuse supports only the base algorithm; disable finalization heuristics")
         progress.snapshot()
         # Reset the Slice ID counter for each run
         Slice.reset_id_counter()
@@ -501,31 +498,68 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         slices = registry.slices
         progress.metrics.pool_size = len(slices)
         geometry = PricingGeometry(bin_width, bin_height, item_width, item_height, slice_height)
-        track_master_keys = pool_enabled or use_greedy_pricing
-        master_keys = {slice_master_key(slice_) for slice_ in slices} if track_master_keys else set()
+        master_keys = {slice_master_key(slice_) for slice_ in slices}
         greedy_pricing = None
         previous_stabilized_dual_prices = None
 
-        def prepare_pricing(duals, excluded=None):
+        def remaining_time():
+            return max_time - (time.perf_counter() - progress.started)
+
+        def prepare_pricing(duals):
             nonlocal pricing_session
             with timed_component(queue, "pricing_build"):
-                if pricing_mode == "reuse":
-                    if excluded is not None:
-                        raise ValueError("Pricing reuse does not support auxiliary exclusions")
-                    if pricing_session is None:
-                        pricing_session = IncrementalPricingModel(
-                            max_time, positions_xy_x, positions_xy_y,
-                            bin_width, item_height, item_width, bin_height, slice_height,
-                        )
-                    return pricing_session.prepare(duals)
-                model = create_slave_model(
-                    max_time, positions_xy_x, positions_xy_y, duals,
-                    bin_width, item_height, item_width, bin_height, slice_height)
-                if excluded is not None:
+                if pricing_session is None:
+                    pricing_session = IncrementalPricingModel(
+                        max_time, positions_xy_x, positions_xy_y,
+                        bin_width, item_height, item_width, bin_height, slice_height,
+                    )
+                model = pricing_session.prepare(duals)
+                configure_search(model)
+                model.parameters.timelimit.set(max(0.0, remaining_time()))
+                return model
+
+        def refine_pricing(model, primary):
+            if not heuristics.second_phase or primary[0] is None:
+                return primary
+            refined = refine_slave_model(
+                model, queue, bin_width, item_height, item_width, slice_height,
+                primary, remaining_time)
+            if refined[0] is not None:
+                candidate = candidate_from_slice(
+                    refined[0], dual_prices, geometry, reported_objective=(
+                        refined[1] if pricing_dual_prices is dual_prices else None))
+                # Acceptance always uses the original master duals.
+                return refined[0], candidate.value, refined[2]
+            return refined
+
+        def solve_auxiliary(excluded, kind):
+            progress.start_phase("pricing", pricing_kind=kind, original_duals=False)
+            model = prepare_pricing(pricing_dual_prices)
+            with temporary_pricing_changes(model, queue):
+                with timed_component(queue, "pricing_build"):
                     add_non_empty_constraint(model)
                     for index, active in enumerate(excluded):
                         add_no_good_cut(model, active, index)
-                return model
+                    model.parameters.timelimit.set(max(0.0, remaining_time()))
+                primary = solve_slave_model(
+                    model, queue, manual_interruption, bin_width, item_height,
+                    item_width, slice_height, use_pricing_second_phase=False)
+                refined = refine_pricing(model, primary)
+            progress.end_phase()
+            return refined
+
+        def add_column(slice_, *, minimum=EPS, reported_objective=None):
+            if slice_ is None:
+                return False
+            candidate = candidate_from_slice(slice_, dual_prices, geometry,
+                                             reported_objective=reported_objective)
+            if candidate.value < minimum or (minimum == EPS and candidate.value <= EPS):
+                return False
+            if candidate.master_key in master_keys or not registry.add(slice_):
+                return False
+            master_keys.add(candidate.master_key)
+            progress.record_column(len(slices))
+            return True
 
         progress.begin_iteration(len(slices))
         progress.start_phase("master_lp")
@@ -571,10 +605,11 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             if objective_master is None or dual_prices is None:
                 progress.stop_cg(progress.phase_stop_reason("lp", "lp_failure"))
                 break
-            pricing_dual_prices = dual_prices if finalization_heuristics is False else stabilize_duals(
-                dual_prices,
-                previous_stabilized_dual_prices
-            )
+            # Independent heuristic flags never enable/disable dual smoothing.
+            if finalization_heuristics is False or not config.USE_DUAL_STABILIZATION:
+                pricing_dual_prices = dual_prices
+            else:
+                pricing_dual_prices = stabilize_duals(dual_prices, previous_stabilized_dual_prices)
             previous_stabilized_dual_prices = pricing_dual_prices
 
             if use_greedy_pricing:
@@ -602,16 +637,16 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
             progress.start_phase("pricing", original_duals=pricing_dual_prices is dual_prices)
             slave_model = prepare_pricing(pricing_dual_prices)
-            configure_search(slave_model)
             if pool_enabled:
                 pool_options.configure(slave_model)
-                remaining = max_time - (time.perf_counter() - progress.started)
-                if remaining <= 0:
+                if remaining_time() <= 0:
                     progress.stop_cg("wall_clock_timeout")
                     break
-                slave_model.parameters.timelimit.set(remaining)
             primary_started = time.perf_counter() if pool_enabled else None
-            new_slice, objective_value_slave_model, active_variables = solve_slave_model(slave_model, queue, manual_interruption, bin_width, item_height, item_width, slice_height, finalization_heuristics=finalization_heuristics)
+            primary = solve_slave_model(
+                slave_model, queue, manual_interruption, bin_width, item_height,
+                item_width, slice_height, use_pricing_second_phase=False)
+            new_slice, objective_value_slave_model, active_variables = primary
             primary_time_s = time.perf_counter() - primary_started if pool_enabled else 0.0
             extras = []
             if (pool_enabled and objective_value_slave_model is not None
@@ -619,15 +654,16 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 extras = collect_pricing_extras(
                     slave_model, pricing_dual_prices, geometry, master_keys, new_slice,
                     pool_options, progress, primary_time_s,
-                    lambda: max_time - (time.perf_counter() - progress.started))
+                    remaining_time)
+            # Pool candidates and the main status/bound are frozen before phase two.
+            new_slice, _, active_variables = refine_pricing(slave_model, primary)
             progress.end_phase()
 
             is_duplicate = False
 
             # Validate duplicates only when a new slice was generated
             if new_slice is not None:
-                signature = build_slice_signature(new_slice)
-                is_duplicate = registry.contains(new_slice)
+                is_duplicate = slice_master_key(new_slice) in master_keys
 
             # Stop if the slave did not return a feasible solution
             if objective_value_slave_model is None:
@@ -646,34 +682,24 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             if objective_value_slave_model <= EPS:
                 progress.stop_cg("pricing_converged" if progress.diagnostics.lp_convergence_proven
                                  else progress.phase_stop_reason("pricing", "pricing_nonpositive_unproven"))
-                if not practical_enhancements:
+                if not heuristics.final_enrichment:
                     print("No positive reduced-cost column found. Stopping generation.")
                     break
 
-                excluded_solutions = []
-
-                # Exclude the current slave solution to force a new slice in the next iteration
-                if active_variables:
+                # These columns enrich the integer pool; they supply no LP proof.
+                for initial_slice in (primary[0], new_slice):
+                    add_column(initial_slice, minimum=-EPS)
+                excluded_solutions = [primary[2]] if primary[2] else []
+                if active_variables and active_variables not in excluded_solutions:
                     excluded_solutions.append(active_variables)
 
                 # Start generating extra slices for up to MAX_EXTRA iterations
                 # or until a stopping condition is met
                 for _ in range(MAX_EXTRA):
-                    progress.start_phase("pricing", pricing_kind="extra", original_duals=False)
-                    slave_model = prepare_pricing(pricing_dual_prices, excluded_solutions)
-
-                    # Solve the modified slave model
-                    new_extra_slice, objective_value_extra, extra_active_variables = solve_slave_model(
-                        slave_model,
-                        queue,
-                        manual_interruption,
-                        bin_width,
-                        item_height,
-                        item_width,
-                        slice_height,
-                        finalization_heuristics=finalization_heuristics
-                    )
-                    progress.end_phase()
+                    if remaining_time() <= 0:
+                        break
+                    new_extra_slice, objective_value_extra, extra_active_variables = solve_auxiliary(
+                        excluded_solutions, "extra")
 
                     # Stop extra-slice generation if the slave is infeasible
                     if objective_value_extra is None:
@@ -694,39 +720,30 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                         print("[EXTRA] No hay variables active_variables. Corte.")
                         break
 
-                    # Build the new extra slice signature to validate duplicates
-                    extra_signature = build_slice_signature(new_extra_slice)
-
-                    # Add the extra slice if its signature has not been generated before
-                    if registry.add(new_extra_slice):
-                        if track_master_keys:
-                            master_keys.add(slice_master_key(new_extra_slice))
-                        progress.record_column(len(slices))
+                    add_column(new_extra_slice, minimum=-EPS,
+                               reported_objective=objective_value_extra)
 
                     # Exclude the current slave solution to force a new slice in the next iteration
                     excluded_solutions.append(extra_active_variables)
 
                 break
 
-            # Stop on duplicate slices to avoid cycles
-            if pool_enabled and objective_value_slave_model > EPS:
-                batch = []
-                if new_slice is not None:
-                    key = slice_master_key(new_slice)
-                    is_duplicate = key in master_keys
-                    if not is_duplicate:
-                        batch.append((new_slice, False))
-                batch.extend((candidate_to_slice(candidate, geometry), True) for candidate in extras)
-                if batch:
-                    for slice_, is_extra in batch:
-                        if registry.add(slice_):
-                            master_keys.add(slice_master_key(slice_))
-                            progress.record_column(len(slices))
-                            if is_extra:
-                                progress.record_pool({"pool_extra_columns": 1})
-                    iteration += 1
-                    progress.end_iteration("column_batch_added", len(slices))
-                    continue
+            # Keep the primary incumbent as well as the saved pool when refining.
+            batch = [(primary[0], False)] if pool_enabled and heuristics.second_phase else []
+            batch.append((new_slice, False))
+            batch.extend((candidate_to_slice(candidate, geometry), True) for candidate in extras)
+            added = 0
+            for slice_, is_extra in batch:
+                if added >= (pool_options.max_columns if pool_enabled else 1):
+                    break
+                if add_column(slice_):
+                    added += 1
+                    if is_extra:
+                        progress.record_pool({"pool_extra_columns": 1})
+            if added:
+                iteration += 1
+                progress.end_iteration("column_batch_added" if pool_enabled else "column_added", len(slices))
+                continue
 
             if is_duplicate:
                 reduced_cost_real, item_count, dual_sum = calculate_real_reduced_cost(new_slice, dual_prices, item_width, item_height)
@@ -738,7 +755,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     f"fullReducedCost={reduced_cost_real}"
                 )
 
-                if not practical_enhancements:
+                if not heuristics.duplicate_retries:
                     progress.stop_cg("duplicate")
                     print("Duplicate positive reduced-cost column returned by pricing. Stopping generation.")
                     break
@@ -749,20 +766,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
 
                 added_alternative = False
                 for _ in range(MAX_EXTRA):
-                    progress.start_phase("pricing", pricing_kind="duplicate_retry", original_duals=False)
-                    slave_model = prepare_pricing(pricing_dual_prices, excluded_solutions)
-
-                    new_alternative_slice, objective_value_alternativa, alternative_active_variables = solve_slave_model(
-                        slave_model,
-                        queue,
-                        manual_interruption,
-                        bin_width,
-                        item_height,
-                        item_width,
-                        slice_height,
-                        finalization_heuristics=finalization_heuristics
-                    )
-                    progress.end_phase()
+                    if remaining_time() <= 0:
+                        break
+                    new_alternative_slice, objective_value_alternativa, alternative_active_variables = solve_auxiliary(
+                        excluded_solutions, "duplicate_retry")
 
                     if objective_value_alternativa is None:
                         break
@@ -774,11 +781,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                     if new_alternative_slice is None or not alternative_active_variables:
                         break
 
-                    alternative_signature = build_slice_signature(new_alternative_slice)
-                    if registry.add(new_alternative_slice):
-                        if track_master_keys:
-                            master_keys.add(slice_master_key(new_alternative_slice))
-                        progress.record_column(len(slices))
+                    if add_column(new_alternative_slice,
+                                  reported_objective=objective_value_alternativa):
                         added_alternative = True
                         break
 
@@ -798,14 +802,10 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                 print("The slave did not generate a slice. Stopping.")
                 break
 
-            # Add the new slice and its signature
-            registry.add(new_slice)
-            if track_master_keys:
-                master_keys.add(slice_master_key(new_slice))
-            progress.record_column(len(slices))
-
-            iteration += 1
-            progress.end_iteration("column_added", len(slices))
+            # A returned slice that supplies no new positive master column cannot
+            # keep the loop alive. Geometry/objective failures propagate above.
+            progress.stop_cg("pricing_no_column")
+            break
 
         progress.end_iteration(progress.diagnostics.cg_stop_reason, len(slices))
         if pricing_session is not None:
@@ -904,8 +904,12 @@ def _account_interruption(result, stopped_at, reason):
     ), iterations=iterations, current_iteration=None)
 
 
-def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None, record_iterations=True, pricing_mode="auto", pool_options=None, random_seed=None, threads=None, use_pricing_pool=None, use_greedy_pricing=None):
-    """Execute one instance; auto uses persistent pricing for the base algorithm."""
+def execute_with_time_limit(max_time, instance=None, finalization_heuristics=None,
+                            record_iterations=True, pricing_mode="auto", pool_options=None,
+                            random_seed=None, threads=None, use_pricing_pool=None,
+                            use_greedy_pricing=None, *, use_pricing_second_phase=None,
+                            use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
+    """Execute one instance with a persistent pricing model."""
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
         ExecutionResult(instance.get("case_name", CASE_NAME) if instance is not None else CASE_NAME,
@@ -937,6 +941,14 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
         # variant even when the caller changed the flag in memory.
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
+        heuristics = resolve_pricing_heuristics(
+            finalization_heuristics, use_pricing_second_phase=use_pricing_second_phase,
+            use_pricing_final_enrichment=use_pricing_final_enrichment,
+            use_pricing_duplicate_retries=use_pricing_duplicate_retries)
+        # Preserve the legacy False bypass of dual stabilization without mixing
+        # the alias with explicit flags in the child.
+        heuristic_kwargs = ({"finalization_heuristics": False}
+                            if finalization_heuristics is False else heuristics.as_kwargs())
         queue = multiprocessing.Queue()
         config_data = ConfigData(
             bin_width=instance["bin_width"], bin_height=instance["bin_height"],
@@ -945,7 +957,7 @@ def execute_with_time_limit(max_time, instance=None, finalization_heuristics=Non
             target=orchestrator,
             args=(queue, multiprocessing.Value('b', True), max_time, started,
                   config_data, instance["case_name"]),
-            kwargs={"return_structured": True, "finalization_heuristics": finalization_heuristics,
+            kwargs={"return_structured": True, **heuristic_kwargs,
                     "record_iterations": record_iterations, "pricing_mode": pricing_mode,
                     "pool_options": pool_options, "random_seed": random_seed,
                     "threads": threads, "use_pricing_pool": pool_options is not None,

@@ -3,8 +3,9 @@
 Ejecutar desde la raíz del repositorio, con el entorno Python/CPLEX del
 solver. Para comparar todos los modelos de `main.py`, consultar el
 [README](../README.md#ejecución-de-instancias). `benchmark_runner.py` ejecuta
-solo el modelo propio de generación de columnas, con
-`finalization_heuristics=False`.
+solo el modelo propio de generación de columnas. Las heurísticas de finalización
+están desactivadas por defecto; `--finalization-heuristics` las activa sobre el
+mismo pricing persistente. El solution pool está activo en ambos casos.
 
 ## Ejecución
 
@@ -36,6 +37,7 @@ Para `Results/benchmark.csv`, las salidas son:
 | `benchmark.csv` | Resumen por instancia: 24 columnas, o 44 con `--detailed-csv`. |
 | `benchmark_iterations.csv` | Una fila por intento del ciclo LP/pricing. |
 | `benchmark_phases.csv` | Acumulados y porcentajes de tiempo por instancia. |
+| `benchmark_pool.jsonl` | Configuración del pool y las heurísticas, versiones, hashes y resultados completos. |
 | `benchmark.trc` | Traza PAVER, si se solicita o si PAVER está habilitado. |
 
 Los tres CSV se escriben incrementalmente después de cada instancia. Los
@@ -45,9 +47,10 @@ pide confirmación si existen salidas; la API rechaza sobrescribir salvo
 
 ## Generación múltiple
 
-El benchmark usa una columna por iteración por defecto (`--pool-mode off`),
-independientemente de `USE_PRICING_SOLUTION_POOL` en `config.py`. Para incorporar
-hasta cinco columnas del pool habitual del pricing:
+El benchmark usa el pool habitual por defecto (`--pool-mode passive`), con hasta
+cinco columnas por iteración. `--pool-mode off` selecciona un control explícito
+de una columna, independientemente de `USE_PRICING_SOLUTION_POOL` en `config.py`.
+Para fijar explícitamente la configuración del pool:
 
 ```powershell
 python benchmark_runner.py --input benchmark_validation_baseline.csv --output Results/pool_passive.csv --time 60 --pool-mode passive --pool-columns 5 --pool-capacity 20 --seed 1 --threads 1 --no-paver
@@ -65,6 +68,26 @@ esquemas CSV. Contiene configuración, semilla, hilos, versiones, hashes de
 fuentes y resultados completos, incluidas las métricas del pool. Este archivo
 también está protegido contra sobrescritura. Para comparar variantes, usar
 las mismas instancias, presupuestos, semillas e hilos y salidas distintas.
+
+Para comparar heurísticas, mantener el pool activo y variar solamente los flags
+`--pricing-second-phase`, `--pricing-final-enrichment` y
+`--pricing-duplicate-retries`, conservando los demás parámetros. Pueden combinarse
+libremente; las formas `--no-pricing-*` las desactivan explícitamente. Si se omiten,
+siguen los tres flags de `config.py`, todos en `False` por defecto. El enriquecimiento
+solo ejecuta la segunda fase cuando esta también está habilitada.
+
+Todos los flujos usan una única instancia CPLEX del pricing; la estabilización
+dual está desactivada por defecto y no depende de estos flags. En la API,
+`run_benchmark` acepta `use_pricing_second_phase`, `use_pricing_final_enrichment`
+y `use_pricing_duplicate_retries`; omitir `pool_options` usa el pool habitual y
+pasar `pool_options=None` solicita el control de una columna. El JSONL registra
+los tres valores resueltos y `pricing_mode="reuse"`, además de las opciones del pool.
+
+El alias obsoleto `--finalization-heuristics` activa las tres heurísticas. La API
+conserva `finalization_heuristics=True/False`, con aviso de obsolescencia; no se
+puede mezclar con flags independientes explícitos. El campo histórico del JSONL
+registra el alias recibido o `null` cuando se usan las opciones independientes.
+La [guía del algoritmo](algorithm.md#heurísticas-de-finalización) detalla la migración.
 
 El diagnóstico independiente observa una trayectoria de una columna y
 reproduce sus duales sin incorporar candidatos adicionales al maestro:
@@ -148,8 +171,9 @@ el corte actual aunque permanezcan estados de una resolución anterior.
 
 En `*_iterations.csv`, `master_build_time_s` incluye construcción,
 actualización y preparación del LP. `pricing_build_time_s` incluye la primera
-construcción y las actualizaciones de objetivo del modelo reutilizado; en
-modo reconstrucción incluye cada armado. `master_solve_time_s` y
+construcción y las actualizaciones de objetivo del modelo reutilizado. Incluye
+además la preparación y restauración de los cambios temporales
+de las búsquedas auxiliares. `master_solve_time_s` y
 `pricing_solve_time_s` miden solo llamadas a `model.solve()`, sin extracción
 de duales ni postprocesamiento. Los totales de fase contienen esos componentes;
 no deben sumarse otra vez con ellos.

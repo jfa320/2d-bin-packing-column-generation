@@ -1,4 +1,5 @@
 from queue import Queue
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -172,11 +173,16 @@ def run_loop(monkeypatch):
                           "raw_status": raw, "state": state})
             events.append("rmp" if relaxed else "ip")
             return value, prices, []
-        def build(*a):
-            events.append("exact_build")
-            model = object()
-            exact_models.append(model)
-            return model
+        class PricingSession:
+            def __init__(self, *a):
+                self.model = SimpleNamespace(parameters=SimpleNamespace(
+                    timelimit=SimpleNamespace(set=lambda value: None)))
+                events.append("exact_build")
+                exact_models.append(self.model)
+            def prepare(self, duals):
+                return self.model
+            def close(self):
+                pass
         def exact(model, progress, *a, **k):
             events.append("exact_solve")
             with cg.timed_component(progress, "pricing_solve"):
@@ -187,10 +193,10 @@ def run_loop(monkeypatch):
                           "raw_status": exact_status, "state": map_cplex_mip_status(exact_status)})
             return response
         monkeypatch.setattr(cg, "solve_master_model", master)
-        monkeypatch.setattr(cg, "create_slave_model", build)
+        monkeypatch.setattr(cg, "IncrementalPricingModel", PricingSession)
         monkeypatch.setattr(cg, "solve_slave_model", exact)
         return cg.orchestrator(Queue(), None, 60, 0, ConfigData(2, 2, 1, 1),
-                               return_structured=True, pricing_mode="rebuild",
+                               return_structured=True, pricing_mode="reuse",
                                use_pricing_pool=False,
                                finalization_heuristics=kwargs.pop("finalization_heuristics", False),
                                **kwargs)
@@ -259,7 +265,7 @@ def test_exact_columns_also_enter_the_greedy_duplicate_registry(run_loop, monkey
     assert result.metrics.greedy_pricing_fallbacks == 2
     assert result.metrics.greedy_pricing_accepted == 0
     assert result.metrics.generated_columns == 1
-    assert len(run_loop.models) == 2
+    assert len(run_loop.models) == 1
     assert result.diagnostics.lp_convergence_proven
 
 
@@ -282,6 +288,7 @@ def test_greedy_failure_needs_exact_evidence_for_closure(run_loop, bound, proven
 
 
 def test_greedy_uses_original_duals_even_when_exact_duals_are_stabilized(run_loop, monkeypatch):
+    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", True)
     original = {"pi": {"(0,0)": 1.0}}
     stabilize = Mock(return_value={"pi": {"(0,0)": 100.0, "(1,0)": 100.0}})
     monkeypatch.setattr(cg, "stabilize_duals", stabilize)
