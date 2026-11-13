@@ -45,6 +45,38 @@ sidecars también se generan con `--no-paver`. Elegir nombres nuevos: el CLI
 pide confirmación si existen salidas; la API rechaza sobrescribir salvo
 `overwrite=True`. `Results/` está ignorado por Git.
 
+## Inicialización
+
+La estrategia predeterminada es `homogeneous`, con filas de una sola orientación.
+La alternativa experimental `--initialization mixed` conserva esas filas y agrega
+filas con ambas orientaciones mediante una búsqueda geométrica acotada:
+
+```powershell
+python benchmark_runner.py --input benchmark_validation_baseline.csv --output Results/initial_mixed.csv --time 60 --initialization mixed --initial-mixed-max-columns 24 --seed 1 --threads 1 --no-paver
+```
+
+El límite afecta solo a columnas mixtas adicionales; cero mantiene el pool
+homogéneo. Se consideran hasta cuatro alturas, tres composiciones y dos órdenes
+por composición, como describe el [algoritmo](algorithm.md#rebanadas-e-inicialización).
+No se requiere una resolución adicional del pricing para generar las semillas.
+La API `run_benchmark` admite `initialization` e `initial_mixed_max_columns`;
+omitirlos sigue `config.py`. El ejecutor transmite los valores resueltos al hijo.
+
+El JSONL del pool guarda ambos parámetros, los hashes del generador y sus
+dependencias, y las métricas `initialization_time_s`, `initial_columns`,
+`initial_mixed_columns` e `initial_lp_value`. El primer LP tiene su estado en
+`result.diagnostics.initial_lp_status`; un objetivo ausente permanece ausente,
+y un valor sin estado óptimo no debe tratarse como óptimo del pool. Los esquemas
+CSV se conservan. Con `--pool-mode off` no se genera ese JSONL; las métricas
+siguen disponibles en los resultados estructurados de la API.
+
+La inicialización consume el presupuesto global y su tiempo está incluido en
+`cg_time_s`. `generated_columns` excluye todas las semillas, también las mixtas.
+No se calcula un entero inicial adicional durante la ejecución normal.
+Para comparar estrategias, conservar greedy, pool, los tres flags de heurísticas,
+estabilización dual, semilla, hilos y presupuesto, cambiando solo la inicialización.
+Un mejor primer LP no demuestra por sí solo una mejora de tiempo o de calidad final.
+
 ## Generación múltiple
 
 El benchmark usa el pool habitual por defecto (`--pool-mode passive`), con hasta

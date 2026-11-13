@@ -16,6 +16,9 @@ from objects import Slice
 from models.common.position_generator import generate_positions_xym
 from models.column_generation.greedy_pricing import GreedyPricingHeuristic
 from models.column_generation.pricing_options import resolve_pricing_heuristics
+from models.column_generation.initialization import (
+    generate_mixed_slices, resolve_initialization,
+)
 from models.column_generation.master_problem import (
     IncrementalMasterModel,
     create_master_model,
@@ -132,6 +135,7 @@ class _CGProgress:
         self.error = None
         self.ip_started = None
         self.finished = False
+        self.initial_lp_recorded = False
 
     def result(self, include_history=True):
         now = time.perf_counter()
@@ -257,6 +261,7 @@ class _CGProgress:
         return {
             "master_lp": "master_lp_time_s", "pricing": "pricing_time_s",
             "integer_master": "integer_master_time_s",
+            "initialization": "initialization_time_s",
         }.get(self.diagnostics.active_phase)
 
     def _freeze_phase(self):
@@ -381,6 +386,12 @@ class _CGProgress:
                 })
                 if self.current_iteration is not None and hasattr(self.current_iteration, status_field):
                     setattr(self.current_iteration, status_field, status)
+                if phase == "lp" and not self.initial_lp_recorded:
+                    self.initial_lp_recorded = True
+                    self.diagnostics = replace(self.diagnostics, initial_lp_status=status)
+                    value = message.get("objective")
+                    if state.has_feasible_solution and value is not None and math.isfinite(value):
+                        self.metrics.initial_lp_value = value
             if self.current_iteration is not None:
                 if phase == "lp" and state.has_feasible_solution:
                     self.current_iteration.lp_value = message.get("objective")
@@ -439,7 +450,8 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                  record_iterations=True, pricing_mode="auto",
                  pool_options=None, random_seed=None, threads=None, use_pricing_pool=None,
                  use_greedy_pricing=None, use_pricing_second_phase=None,
-                 use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
+                 use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None,
+                 initialization=None, initial_mixed_max_columns=None):
     """Run CG with one persistent pricing instance, including auxiliary searches."""
     progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
     queue = progress
@@ -450,6 +462,7 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
             use_pricing_final_enrichment=use_pricing_final_enrichment,
             use_pricing_duplicate_retries=use_pricing_duplicate_retries)
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
+        initial_options = resolve_initialization(initialization, initial_mixed_max_columns)
         for name, value, lower in (("random_seed", random_seed, 0), ("threads", threads, 1)):
             if value is not None and (isinstance(value, bool) or not isinstance(value, int)
                                       or value < lower):
@@ -490,15 +503,20 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         physical_item_bound = calculate_physical_item_bound(bin_width, bin_height, item_width, item_height)
 
         # Generate initial slices using a physical bound, not finite item demand.
+        progress.start_phase("initialization")
         slices = generate_initial_slices(bin_width, bin_height, item_width, item_height, positions_xy_x, positions_xy_y, physical_item_bound)
-
-        iteration = 0
-
+        geometry = PricingGeometry(bin_width, bin_height, item_width, item_height, slice_height)
+        mixed_slices = generate_mixed_slices(
+            slices, geometry, positions_xy_x, positions_xy_y, initial_options)
+        slices.extend(mixed_slices)
         registry = SliceRegistry(slices)
         slices = registry.slices
         progress.metrics.pool_size = len(slices)
-        geometry = PricingGeometry(bin_width, bin_height, item_width, item_height, slice_height)
+        progress.metrics.initial_columns = len(slices)
+        progress.metrics.initial_mixed_columns = len(mixed_slices)
         master_keys = {slice_master_key(slice_) for slice_ in slices}
+        progress.end_phase()
+        iteration = 0
         greedy_pricing = None
         previous_stabilized_dual_prices = None
 
@@ -878,14 +896,15 @@ def _account_interruption(result, stopped_at, reason):
                else max(0.0, stopped_at - diagnostics.snapshot_time_s))
     changes = {}
     field = {"master_lp": "master_lp_time_s", "pricing": "pricing_time_s",
-             "integer_master": "integer_master_time_s"}.get(phase)
+             "integer_master": "integer_master_time_s",
+             "initialization": "initialization_time_s"}.get(phase)
     if field is not None:
         changes[field] = getattr(result.metrics, field) + elapsed
     component = diagnostics.active_component
     if component is not None:
         component_field = component + "_time_s"
         changes[component_field] = getattr(result.metrics, component_field) + elapsed
-    if phase in {"preparation", "cg_overhead", "master_lp", "pricing"}:
+    if phase in {"preparation", "initialization", "cg_overhead", "master_lp", "pricing"}:
         changes["cg_time_s"] = result.metrics.cg_time_s + elapsed
     iterations = list(result.iterations)
     current = result.current_iteration
@@ -908,7 +927,8 @@ def execute_with_time_limit(max_time, instance=None, *,
                             record_iterations=True, pricing_mode="auto", pool_options=None,
                             random_seed=None, threads=None, use_pricing_pool=None,
                             use_greedy_pricing=None, use_pricing_second_phase=None,
-                            use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None):
+                            use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None,
+                            initialization=None, initial_mixed_max_columns=None):
     """Execute one instance with a persistent pricing model."""
     started = time.perf_counter()
     result = ColumnGenerationExecutionResult(
@@ -941,6 +961,7 @@ def execute_with_time_limit(max_time, instance=None, *,
         # variant even when the caller changed the flag in memory.
         use_greedy_pricing = _resolve_greedy_pricing(use_greedy_pricing)
         pool_options = _resolve_pool_options(pool_options, use_pricing_pool)
+        initial_options = resolve_initialization(initialization, initial_mixed_max_columns)
         heuristics = resolve_pricing_heuristics(
             use_pricing_second_phase=use_pricing_second_phase,
             use_pricing_final_enrichment=use_pricing_final_enrichment,
@@ -954,6 +975,7 @@ def execute_with_time_limit(max_time, instance=None, *,
             args=(queue, multiprocessing.Value('b', True), max_time, started,
                   config_data, instance["case_name"]),
             kwargs={"return_structured": True, **heuristics.as_kwargs(),
+                    **initial_options.as_kwargs(),
                     "record_iterations": record_iterations, "pricing_mode": pricing_mode,
                     "pool_options": pool_options, "random_seed": random_seed,
                     "threads": threads, "use_pricing_pool": pool_options is not None,

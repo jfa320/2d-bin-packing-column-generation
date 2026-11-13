@@ -2,6 +2,7 @@ import csv
 import subprocess
 import sys
 import json
+from pathlib import Path
 
 import pytest
 
@@ -50,7 +51,8 @@ def test_pool_options_and_reproducible_controls_have_separate_report(tmp_path, h
         assert use_pricing_second_phase is heuristics
         assert use_pricing_final_enrichment is heuristics
         assert use_pricing_duplicate_retries is heuristics
-        assert kwargs == dict(pool_options=options, random_seed=2, threads=1)
+        assert kwargs == dict(pool_options=options, random_seed=2, threads=1,
+                              initialization="homogeneous", initial_mixed_max_columns=24)
         result = make_result()
         result.metrics.pool_extra_columns = 4
         return result
@@ -103,7 +105,8 @@ def test_all_csv_rows_order_flags_dimensions_metrics_and_flush(tmp_path):
         assert max_time == 12
         assert heuristics == dict(use_pricing_second_phase=False,
                                   use_pricing_final_enrichment=False,
-                                  use_pricing_duplicate_retries=False)
+                                  use_pricing_duplicate_retries=False,
+                                  initialization="homogeneous", initial_mixed_max_columns=24)
         assert pool_options.mode == "passive"
         assert pool_options.max_columns == 5
         assert instance == {"case_name": f"sample_{len(calls)}", "bin_width": 20,
@@ -334,7 +337,8 @@ def test_cli_defaults_and_smoke_override(monkeypatch, tmp_path):
                          "run_paver_after": True, "paver_path": None,
                          "paver_output": None, "overwrite": False, "detailed_csv": True,
                          "pool_options": PricingPoolOptions(), "use_pricing_second_phase": None,
-                         "use_pricing_final_enrichment": None, "use_pricing_duplicate_retries": None})
+                         "use_pricing_final_enrichment": None, "use_pricing_duplicate_retries": None,
+                         "initialization": "homogeneous", "initial_mixed_max_columns": 24})
     assert runner.main(["--pricing-second-phase", "--pricing-final-enrichment",
                         "--pricing-duplicate-retries", "--no-paver"]) == 0
     assert calls[2][1]["use_pricing_second_phase"] is True
@@ -680,4 +684,70 @@ def test_benchmark_rejects_invalid_flag_before_writing(tmp_path, flag):
     with pytest.raises(ValueError, match=flag):
         runner.run_benchmark(tmp_path / "missing.csv", tmp_path / "out.csv",
                              **{flag: "enabled"})
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("pool", [False, True])
+def test_initialization_settings_and_metrics_reach_executor_and_jsonl(tmp_path, monkeypatch, pool):
+    import hashlib
+    import config
+    monkeypatch.setattr(config, "INITIALIZATION_STRATEGY", "mixed")
+    monkeypatch.setattr(config, "INITIAL_MIXED_MAX_COLUMNS", 5)
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "initial.csv"
+    calls = []
+    def execute(*args, **kwargs):
+        calls.append(kwargs)
+        result = make_result()
+        result.metrics.initial_columns = 8
+        result.metrics.initial_mixed_columns = 5
+        result.metrics.initialization_time_s = 0.125
+        result.metrics.initial_lp_value = 20
+        result.diagnostics.initial_lp_status = SolverPhaseStatus(1, "Normal", 1)
+        return result
+    options = {} if pool else {"pool_options": None}
+    runner.run_benchmark(source, output, execute=execute, **options)
+    assert calls[0]["initialization"] == "mixed"
+    assert calls[0]["initial_mixed_max_columns"] == 5
+    if pool:
+        row = json.loads((tmp_path / "initial_pool.jsonl").read_text())
+        assert row["initialization"] == "mixed"
+        assert row["initial_mixed_max_columns"] == 5
+        assert row["result"]["metrics"]["initialization_time_s"] == 0.125
+        assert row["result"]["metrics"]["initial_columns"] == 8
+        assert row["result"]["metrics"]["initial_mixed_columns"] == 5
+        assert row["result"]["metrics"]["initial_lp_value"] == 20
+        assert row["result"]["diagnostics"]["initial_lp_status"]["raw_cplex_status"] == 1
+        root = Path(runner.__file__).resolve().parent
+        for name in ("models/column_generation/initialization.py",
+                     "models/column_generation/orchestrator_services.py",
+                     "models/common/position_generator.py", "objects/Item.py", "objects/Slice.py"):
+            assert row["sha256"][name] == hashlib.sha256((root / name).read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("strategy", ["mixed", "homogeneous"])
+def test_cli_passes_initialization_and_cap(monkeypatch, tmp_path, strategy):
+    calls = []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "run_benchmark", lambda *a, **kw: calls.append(kw) or tmp_path)
+    assert runner.main(["--initialization", strategy, "--initial-mixed-max-columns", "4",
+                        "--no-paver"]) == 0
+    assert calls[0]["initialization"] == strategy
+    assert calls[0]["initial_mixed_max_columns"] == 4
+
+
+@pytest.mark.parametrize("settings", [{"initialization": "unknown"},
+                                     {"initial_mixed_max_columns": -1},
+                                     {"initial_mixed_max_columns": True}])
+def test_invalid_initialization_fails_before_writing(tmp_path, settings):
+    with pytest.raises(ValueError):
+        runner.run_benchmark(tmp_path / "missing.csv", tmp_path / "out.csv", **settings)
+    assert not list(tmp_path.iterdir())
+
+
+def test_cli_rejects_negative_initialization_cap_before_writing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as error:
+        runner.main(["--initial-mixed-max-columns", "-1", "--no-paver"])
+    assert error.value.code == 2
     assert not list(tmp_path.iterdir())

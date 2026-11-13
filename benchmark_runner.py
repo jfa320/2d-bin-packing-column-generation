@@ -202,7 +202,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   overwrite=False, detailed_csv=False, pool_options=_DEFAULT_POOL_OPTIONS,
                   random_seed=None, threads=None,
                   use_pricing_second_phase=None, use_pricing_final_enrichment=None,
-                  use_pricing_duplicate_retries=None):
+                  use_pricing_duplicate_retries=None, initialization=None,
+                  initial_mixed_max_columns=None):
     """Write outputs and return the report Path; execute is a CG test seam.
 
     Relative output/trace paths are relative to the working directory. Solver
@@ -219,6 +220,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
         use_pricing_second_phase=use_pricing_second_phase,
         use_pricing_final_enrichment=use_pricing_final_enrichment,
         use_pricing_duplicate_retries=use_pricing_duplicate_retries)
+    from models.column_generation.initialization import resolve_initialization
+    initial_options = resolve_initialization(initialization, initial_mixed_max_columns)
     if pool_options is _DEFAULT_POOL_OPTIONS:
         from models.column_generation.solution_pool import PricingPoolOptions
         pool_options = PricingPoolOptions()
@@ -255,7 +258,13 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 "benchmark_runner.py", "utils/execution_result.py",
                 "models/column_generation/solution_pool.py",
                 "models/column_generation/column_generation_solver.py",
-                "models/column_generation/slave_problem.py")
+                "models/column_generation/slave_problem.py",
+                "models/column_generation/initialization.py",
+                "models/column_generation/orchestrator_services.py",
+                "models/column_generation/greedy_pricing.py",
+                "models/column_generation/master_problem.py",
+                "models/common/position_generator.py", "config.py",
+                "objects/Item.py", "objects/Slice.py")
             pool_sources = {name: hashlib.sha256((Path(__file__).resolve().parent / name)
                                                 .read_bytes()).hexdigest()
                             for name in pool_source_names}
@@ -288,7 +297,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
             }
             started = time.perf_counter()
             try:
-                options = {}
+                options = initial_options.as_kwargs()
                 if pool_options is not None:
                     options["pool_options"] = pool_options
                 else:
@@ -333,6 +342,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                     instance=solver_instance, settings=asdict(pool_options),
                     random_seed=random_seed, threads=threads, max_time_s=max_time,
                     pricing_mode="reuse",
+                    **initial_options.as_kwargs(),
                     **heuristics.as_kwargs(),
                     python=sys.version, platform=platform.platform(),
                     cplex=getattr(sys.modules.get("cplex"), "__version__", None),
@@ -366,6 +376,10 @@ def main(argv=None):
                         help="Export all 44 diagnostic fields instead of the default 24.")
     parser.add_argument("--expected-count", type=int, default=None,
                         help="Optional row-count assertion; by default all CSV rows are executed.")
+    parser.add_argument("--initialization", choices=("homogeneous", "mixed"), default=None,
+                        help="Initial columns: homogeneous rows (default), or experimental mixed enrichment.")
+    parser.add_argument("--initial-mixed-max-columns", type=int, default=None,
+                        help="Maximum additional mixed seeds (config default: 24; zero disables extras).")
     parser.add_argument("--pool-mode", choices=("off", "passive", "populate"), default="passive")
     parser.add_argument("--pricing-second-phase", dest="use_pricing_second_phase",
                         action=argparse.BooleanOptionalAction, default=None,
@@ -395,6 +409,11 @@ def main(argv=None):
     parser.add_argument("--paver-output", default=None,
                         help="Directory for the PAVER HTML report.")
     args = parser.parse_args(argv)
+    from models.column_generation.initialization import resolve_initialization
+    try:
+        initial_options = resolve_initialization(args.initialization, args.initial_mixed_max_columns)
+    except ValueError as error:
+        parser.error(str(error))
     independent_flags = {
         "use_pricing_second_phase": args.use_pricing_second_phase,
         "use_pricing_final_enrichment": args.use_pricing_final_enrichment,
@@ -432,7 +451,8 @@ def main(argv=None):
         overwrite = True
 
     try:
-        optional_settings = {"pool_options": pool_options, **independent_flags}
+        optional_settings = {"pool_options": pool_options, **independent_flags,
+                             **initial_options.as_kwargs()}
         if args.seed is not None:
             optional_settings["random_seed"] = args.seed
         if args.threads is not None:

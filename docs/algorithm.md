@@ -55,9 +55,52 @@ coordenadas enteras; no usa la tolerancia de costo reducido.
 
 `calculate_slice_height` estima las filas necesarias para el 5 % de la cota
 por área en ambas orientaciones y toma el menor alto. `InitialSliceGenerator`
-crea las rebanadas homogéneas iniciales en las alturas disponibles. La variante
+crea las rebanadas homogéneas iniciales en las alturas disponibles: cada columna
+es una fila llena desde la izquierda, con una sola orientación. La variante
 `generate_initial_slices_greedy_uniform` existe como alternativa, pero el
 orquestador no la llama y no hay selector CLI para activarla.
+
+La estrategia predeterminada es `homogeneous`, que usa solo las columnas
+homogéneas. La alternativa experimental `mixed`, activada explícitamente con
+`--initialization mixed`, conserva esas columnas y agrega filas con ambas orientaciones mediante
+[initialization.py](../models/column_generation/initialization.py), sin resolver
+otro modelo. En dimensiones normalizadas `w >= h`, toma hasta cuatro alturas
+admisibles para ambas orientaciones, elegidas por índices equiespaciados que
+incluyen los extremos. Para cada altura calcula `k = floor((W-h)/w)` y ensaya
+`k`, `max(1,k-1)` y `ceil(k/2)` ítems normales, eliminando cantidades repetidas.
+Completa el ancho restante con rotados y prueba ambos órdenes de bloques.
+Las composiciones que no permiten al menos un ítem de cada orientación se omiten.
+
+`--initialization homogeneous` también selecciona explícitamente la estrategia predeterminada.
+
+Todos los ítems de una candidata comienzan en el mismo `y`; los rotados pueden
+sobresalir por arriba de la ventana nominal, respetando el bin. Se comprueba
+pertenencia a las posiciones de cada orientación, geometría y equivalencia
+visible al maestro antes de incorporar la columna. Las fallas de validación se
+propagan. No se precalculan ocupaciones de todo el dominio para esta búsqueda.
+
+Se prueban como máximo 24 patrones (cuatro alturas, tres composiciones y dos
+órdenes). `initial_mixed_max_columns` limita las incorporaciones; su default es
+24 y cero conserva solo las semillas homogéneas. Aumentarlo por encima de 24
+no amplía la búsqueda. Ítems cuadrados o ausencia de mezclas factibles también
+conservan el pool homogéneo. Es una heurística determinista, sin garantía de
+mejorar tiempos o calidad final; no cambia el dominio ni la política del pricing.
+
+`initialization=None` e `initial_mixed_max_columns=None` en `orchestrator` o
+`execute_with_time_limit` siguen `INITIALIZATION_STRATEGY` e
+`INITIAL_MIXED_MAX_COLUMNS` de `config.py`. Los valores se resuelven en el padre
+y se transmiten explícitamente al hijo. El benchmark expone
+`--initialization homogeneous|mixed` y `--initial-mixed-max-columns`.
+
+Los resultados estructurados registran `initialization_time_s`,
+`initial_columns`, `initial_mixed_columns` e `initial_lp_value`, junto al estado
+del primer LP en `diagnostics.initial_lp_status`. El tiempo incluye generación,
+validación y registro de semillas, forma parte de `cg_time_s` y consume el
+presupuesto global. El valor inicial se captura una sola vez, antes del pricing;
+si el primer LP no tiene solución disponible queda ausente. Su estado debe
+consultarse antes de interpretarlo como óptimo del pool. No se resuelve un entero
+inicial adicional y ese LP no certifica optimalidad global. Las semillas mixtas
+se cuentan entre las iniciales, no en `generated_columns` ni como aciertos greedy.
 
 [Slice](../objects/Slice.py) guarda los ítems y sus posiciones absolutas, el
 ancho y el alto nominal; no guarda `y_base`. El maestro selecciona rebanadas
@@ -171,6 +214,46 @@ Un entero inferior a la referencia puede deberse a un pool insuficiente o a
 una resolución incompleta: comprobar el estado del entero, la factibilidad y
 que LP/IP correspondan al pool analizado. Las métricas y los estados se
 explican en [benchmark_paver.md](benchmark_paver.md).
+
+### Limitación del maestro entero restringido
+
+El cierre LP no garantiza que las columnas generadas permitan alcanzar el
+óptimo entero del packing. El flujo base incorpora columnas con valor de
+pricing mayor que `EPS`; puede omitir patrones de valor cero que no mejoran
+el LP, pero permiten una mejor combinación entera. Esta es una limitación del
+esquema de resolver primero CG sobre el LP y luego un entero sobre su pool.
+
+En `case2` del [catálogo](../instances.py), con bin de 5 × 5 e ítems de 3 × 2,
+se observó el siguiente resultado con CPLEX 22.1.1.0, semilla 1, un hilo y
+límite de 60 segundos. Greedy y pool pasivo permanecieron activos, con hasta
+cinco columnas por iteración, capacidad 20 e intensidad 1; la estabilización
+dual estuvo desactivada.
+
+| Inicialización | Heurísticas de finalización | LP final | Entero restringido |
+|---|---|---:|---:|
+| Mixta | Desactivadas | 4 | 3 |
+| Homogénea | Desactivadas | 4 | 3 |
+| Mixta | Solo enriquecimiento final | 4 | 4 |
+| Mixta | Las tres activas | 4 | 4 |
+
+Sin heurísticas de finalización, ambas inicializaciones certificaron el cierre
+LP y sus maestros enteros se resolvieron óptimamente sobre los respectivos
+pools. Los layouts fueron geométricamente válidos. En una comprobación
+adicional con los parámetros de búsqueda predeterminados, una columna testigo
+admisible, ausente del pool y de valor cero con los duales finales, permitió
+alcanzar cuatro ítems al incorporarla al maestro entero. Ese packing alcanza
+la cota por áreas de la instancia.
+
+El enriquecimiento final resolvió esta limitación en las corridas de `case2`
+analizadas; las tres heurísticas activas también alcanzaron cuatro ítems.
+Esto no garantiza el óptimo entero en otras instancias, ni demuestra que la
+segunda fase o los reintentos por sí solos resuelvan este caso.
+
+Como mejora futura, queda estudiar la selección de columnas de valor de
+pricing cercano a cero según su utilidad para la fase entera y la diversidad
+de sus patrones, evaluando la calidad obtenida frente al costo de ampliar el
+pool. Las [heurísticas de finalización](#heurísticas-de-finalización) ofrecen
+una mitigación acotada dentro del desarrollo actual.
 
 ## Variantes
 

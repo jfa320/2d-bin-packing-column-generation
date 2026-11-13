@@ -22,6 +22,9 @@ USE_GREEDY_PRICING = True
 # Variant B: up to five useful columns from the regular pricing pool, without
 # populate. Set False to restore one column per iteration.
 USE_PRICING_SOLUTION_POOL = True
+# Homogeneous initialization is the default; mixed is an experimental opt-in.
+INITIALIZATION_STRATEGY = "homogeneous"
+INITIAL_MIXED_MAX_COLUMNS = 24
 INSTANCES = DEFAULT_INSTANCES
 
 

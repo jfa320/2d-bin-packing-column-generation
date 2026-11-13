@@ -117,6 +117,10 @@ def test_completed_iterations_and_phase_metrics(stub_run):
     assert result.metrics.cg_iterations == 2
     assert result.metrics.generated_columns == 1
     assert result.metrics.lp_value == 2.5
+    assert result.metrics.initial_lp_value == 1.5
+    assert result.diagnostics.initial_lp_status.raw_cplex_status == 1
+    assert result.metrics.initial_columns == 1
+    assert result.metrics.initial_mixed_columns == 0
     assert result.metrics.restricted_integer_master == 2
     assert result.metrics.cg_time_s == 11
     assert result.metrics.integer_master_time_s == 3
@@ -1222,3 +1226,28 @@ def test_invalid_flag_fails_before_constructing_pricing(stub_run):
     result = stub_run([], use_pricing_second_phase="enabled")
     assert "use_pricing_second_phase must be a boolean or None" in result.execution.error_message
     assert stub_run.master_builds == stub_run.pricing_models == []
+
+
+def test_initialization_timeout_accounts_for_elapsed_time(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(cg.time, "perf_counter", lambda: clock[0])
+    progress = cg._CGProgress(Queue(), "initialization", 0.0, True)
+    progress.start_phase("initialization")
+    clock[0] = 0.25
+    snapshot = progress.result()
+    result = cg._account_interruption(snapshot, 1.0, "wall_clock_timeout")
+    assert result.metrics.initialization_time_s == pytest.approx(1.0)
+    assert result.metrics.cg_time_s == pytest.approx(1.0)
+    assert result.metrics.initial_lp_value is None
+    assert result.diagnostics.interrupted_phase == "initialization"
+    assert result.iterations == []
+
+
+def test_first_lp_state_is_preserved_even_when_no_initial_solution_is_available():
+    progress = cg._CGProgress(Queue(), "initialization", 0.0, False)
+    for raw, value in ((3, None), (1, 9.0)):
+        progress.put({"phase": "lp", "state": map_cplex_lp_status(raw),
+                      "raw_status": raw, "objective": value})
+    assert progress.metrics.initial_lp_value is None
+    assert progress.diagnostics.initial_lp_status.raw_cplex_status == 3
+    assert progress.metrics.lp_value == 9.0

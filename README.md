@@ -191,6 +191,22 @@ llama `Results\benchmark.trc`.
 
 Para generar solamente el CSV y la traza se puede usar `--no-paver`.
 
+La inicialización predeterminada es `homogeneous`, con filas de una sola
+orientación. La alternativa experimental `mixed` se activa explícitamente:
+conserva las filas homogéneas y agrega hasta 24 rebanadas que mezclan
+orientaciones, sin una resolución adicional de CPLEX:
+
+```powershell
+python benchmark_runner.py --input benchmark_validation_baseline.csv --output Results/benchmark_mixed.csv --time 60 --initialization mixed --initial-mixed-max-columns 24 --seed 1 --threads 1 --no-paver
+```
+
+`--initialization homogeneous` también permite seleccionar explícitamente la
+estrategia predeterminada. Para comparar ambas estrategias, mantener iguales greedy, pool,
+heurísticas, instancias y presupuestos. La configuración y las métricas de
+inicialización se guardan en el JSONL del pool, conservando los esquemas CSV.
+La [guía del algoritmo](docs/algorithm.md#rebanadas-e-inicialización) describe
+la búsqueda acotada y los límites de interpretación de los objetivos iniciales.
+
 `--expected-count` es opcional y solo permite verificar una cantidad esperada:
 
 ```powershell

@@ -46,6 +46,11 @@ class ColumnGenerationMetrics:
     greedy_pricing_time_s: float = 0.0
     exact_pricing_calls_avoided: int = 0
 
+    initialization_time_s: float = 0.0
+    initial_columns: int = 0
+    initial_mixed_columns: int = 0
+    initial_lp_value: Optional[float] = None
+
 
 @dataclass
 class SolverPhaseStatus:
@@ -124,6 +129,7 @@ class ColumnGenerationDiagnostics:
     active_component: Optional[str] = None
     pool_raw_status: Optional[int] = None
     pool_last_error: Optional[str] = None
+    initial_lp_status: SolverPhaseStatus = field(default_factory=SolverPhaseStatus)
 
 
 @dataclass
