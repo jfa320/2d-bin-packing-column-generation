@@ -9,10 +9,6 @@ def _validate_dimensions(bin_width, bin_height, item_width, item_height):
     dimensions = [bin_width, bin_height, item_width, item_height]
     if not all(isinstance(value, int) and value > 0 for value in dimensions):
         raise ValueError("All dimensions must be positive integers.")
-    if item_width > bin_width and item_width > bin_height:
-        raise ValueError("The item does not fit in the bin in any orientation.")
-    if item_height > bin_width and item_height > bin_height:
-        raise ValueError("The item does not fit in the bin in any orientation.")
 
 
 def _normalize_by_gcd(bin_width, bin_height, item_width, item_height):
@@ -113,6 +109,19 @@ def solve_exact_monoitem_2dbpp(bin_width, bin_height, item_width, item_height,
         bin_width, bin_height, item_width, item_height
     )
     area_upper_bound = (bin_width * bin_height) // (item_width * item_height)
+    result = {
+        "bin_width": original[0], "bin_height": original[1],
+        "item_width": original[2], "item_height": original[3],
+        "allow_rotation": allow_rotation, "capacity": 0,
+        "area_upper_bound": area_upper_bound, "placements": [],
+    }
+    # The empty packing is optimal when no permitted orientation fits.
+    if not any(
+        width <= bin_width and height <= bin_height
+        for width, height, _ in _orientations(item_width, item_height, allow_rotation)
+    ):
+        return result
+
     deadline = None if max_time is None else time.perf_counter() + max_time
     for quantity in range(area_upper_bound, 0, -1):
         solution = _search_packing(
@@ -120,21 +129,12 @@ def solve_exact_monoitem_2dbpp(bin_width, bin_height, item_width, item_height,
             quantity, allow_rotation, deadline,
         )
         if solution is not None:
-            return {
-                "bin_width": original[0], "bin_height": original[1],
-                "item_width": original[2], "item_height": original[3],
-                "allow_rotation": allow_rotation, "capacity": quantity,
-                "area_upper_bound": area_upper_bound,
-                "placements": [
-                    {"x": x * scale, "y": y * scale,
-                     "width": width * scale, "height": height * scale,
-                     "rotated": rotated}
-                    for x, y, width, height, rotated in solution
-                ],
-            }
-    return {
-        "bin_width": original[0], "bin_height": original[1],
-        "item_width": original[2], "item_height": original[3],
-        "allow_rotation": allow_rotation, "capacity": 0,
-        "area_upper_bound": area_upper_bound, "placements": [],
-    }
+            result["capacity"] = quantity
+            result["placements"] = [
+                {"x": x * scale, "y": y * scale,
+                 "width": width * scale, "height": height * scale,
+                 "rotated": rotated}
+                for x, y, width, height, rotated in solution
+            ]
+            break
+    return result
