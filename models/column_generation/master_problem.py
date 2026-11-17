@@ -161,13 +161,31 @@ class MasterSolver:
     def __init__(self, dual_extractor=None):
         self.dual_extractor = dual_extractor or DualExtractor().extract
 
+    @staticmethod
+    def _configure_domain(model, relax_model):
+        model.set_problem_type(
+            cplex.Cplex.problem_type.LP
+            if relax_model else cplex.Cplex.problem_type.MILP
+        )
+        # Converting binary variables to LP keeps their upper bounds. For every
+        # nonempty column, a cell row already implies p_s <= 1; retaining the
+        # explicit bound can absorb its price outside the cell-only pricing dual.
+        # Apply this at every solve, including incremental additions and rebuilds.
+        bounds = [
+            (index, cplex.infinity if relax_model and count > 0 else 1.0)
+            for index, count in enumerate(model.objective.get_linear())
+        ]
+        if bounds:
+            # Empty columns have zero objective and keep a finite upper bound.
+            model.variables.set_upper_bounds(bounds)
+            if not relax_model:
+                # set_problem_type(MILP) alone does not restore integrality after LP.
+                model.variables.set_types([(index, "B") for index, _ in bounds])
+
     def solve(self, model, queue, manual_interruption, relax_model, initial_time):
         del manual_interruption, initial_time
         with timed_component(queue, "master_build"):
-            model.set_problem_type(
-                cplex.Cplex.problem_type.LP
-                if relax_model else cplex.Cplex.problem_type.MILP
-            )
+            self._configure_domain(model, relax_model)
         with timed_component(queue, "master_solve"):
             model.solve()
         raw_status = model.solution.get_status()

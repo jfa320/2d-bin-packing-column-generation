@@ -343,6 +343,7 @@ def test_nonoptimal_feasible_lp_has_no_duals_or_lp_metric(raw, monkeypatch):
     model.solution.get_objective_value.return_value = 3.5
     model.solution.get_values.return_value = []
     model.variables.get_names.return_value = []
+    model.objective.get_linear.return_value = []
     duals = Mock(side_effect=AssertionError("Invalid duals"))
     monkeypatch.setattr(master_problem, "get_dual_values", duals)
     _, dual_values, _ = master_problem.solve_master_model(model, progress, None, True, 0)
@@ -379,6 +380,7 @@ def test_numerical_error_overrides_earlier_limit():
 @pytest.mark.parametrize("relaxed,raw", [(True, 3), (False, 108)])
 def test_master_without_feasibility_never_queries_objective(relaxed, raw):
     model = Mock()
+    model.objective.get_linear.return_value = []
     model.solution.get_status.return_value = raw
     model.solution.is_primal_feasible.return_value = False
     result = master_problem.solve_master_model(model, Queue(), SimpleNamespace(value=True), relaxed, 0)
@@ -389,6 +391,7 @@ def test_master_without_feasibility_never_queries_objective(relaxed, raw):
 @pytest.mark.parametrize("relaxed,raw", [(True, 5), (False, 115), (False, 117)])
 def test_master_invalid_point_ignores_reported_feasibility(relaxed, raw):
     model = Mock()
+    model.objective.get_linear.return_value = []
     model.solution.get_status.return_value = raw
     model.solution.is_primal_feasible.return_value = True
     assert master_problem.solve_master_model(model, Queue(), None, relaxed, 0) == (None, None, [])

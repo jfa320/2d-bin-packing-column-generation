@@ -7,6 +7,11 @@ solo el modelo propio de generación de columnas. Las heurísticas de finalizaci
 están desactivadas por defecto y se controlan mediante tres flags independientes
 sobre el mismo pricing persistente. El solution pool está activo.
 
+Para interpretar un informe ya generado, consultar los
+[archivos de salida](#archivos-que-entrega-paver), la
+[lectura de tablas](#qué-leer-en-las-tablas) y la
+[lectura de gráficos](#qué-información-sacar-de-los-gráficos).
+
 ## Ejecución
 
 ```powershell
@@ -240,10 +245,32 @@ costo cero al comparar ejecuciones con distinto protocolo de registro.
 
 ## Traza PAVER
 
+La traza `.trc` es la **entrada de PAVER**, generada por este proyecto.
+Es texto separado por comas, con una definición de registro en líneas que
+empiezan con `*`. Cada fila de datos representa un par instancia/modelo.
 El writer produce ocho columnas:
 
 ```text
 InputFileName,SolverName,Direction,ModelStatus,TerminationStatus,ObjectiveValue,SolverTime,NumberOfIterations
+```
+
+| Columna | Contenido en este proyecto |
+|---|---|
+| `InputFileName` | Nombre de la instancia. |
+| `SolverName` | Identificador del modelo o algoritmo. |
+| `Direction` | `1` para maximizar la cantidad de rectángulos. |
+| `ModelStatus` | Estado del modelo: por ejemplo, `1` óptimo, `8` factible, `9` sin solución. |
+| `TerminationStatus` | Motivo de terminación: `Normal`, `TimeLimit`, `NodeLimit`, `Error`, etc. |
+| `ObjectiveValue` | Cantidad de rectángulos del resultado reportado; `NA` si falta. |
+| `SolverTime` | Tiempo reportado por el ejecutor, en segundos. |
+| `NumberOfIterations` | Iteraciones reportadas; en CG, iteraciones del algoritmo. `NA` si no se informan. |
+
+Ejemplo ilustrativo de una ejecución factible de CG:
+
+```text
+* Trace Record Definition
+* InputFileName,SolverName,Direction,ModelStatus,TerminationStatus,ObjectiveValue,SolverTime,NumberOfIterations
+case1,Model5Orchestrator,1,8,Normal,4,1.250000,6
 ```
 
 `Direction=1` indica maximización. `None` se serializa como `NA`. El writer
@@ -307,23 +334,352 @@ evita problemas estadísticos con tiempos muy pequeños sin modificar la traza.
 distintos. La integración automática aplica esas opciones y toma `failtime`
 del argumento `--time`.
 
-## Lectura del informe de PAVER
+## Archivos que entrega PAVER
 
-| Página | Contenido |
+Con `--writehtml`, PAVER crea una carpeta de informe. En la integración del
+proyecto, una traza `Results/comparison.trc` produce por defecto
+`Results/comparison_paver/`. Abrir `index.html` en el navegador y conservar
+**la carpeta completa** para que funcionen los enlaces y las imágenes.
+Los archivos dependen de los atributos disponibles, los filtros y las opciones;
+no todas las corridas generan todas las familias siguientes.
+
+```text
+comparison.trc                         # entrada, escrita por el proyecto
+comparison_paver/                      # salida de PAVER
+    index.html
+    documentation.html
+    solvedata.html
+    raw.html
+    stat_Status.html
+    stat_SolutionQuality.html
+    stat_Efficiency.html
+    stat_Statusdata000.html
+    stat_Statuscount000.png
+    stat_Efficiencydata000.html
+    stat_Efficiencyratio000_virt.best.html
+    stat_Efficiencyarithmean000.png
+    stat_Efficiencygeommean000.png
+    stat_Efficiencysh.geommean000.png
+    stat_Efficiencyboxplot000.png
+    stat_Efficiencyboxplot000_virt.best.png
+    stat_Efficiencyclose000_virt.best.png
+    stat_Efficiencybetter000_virt.best.png
+    stat_Efficiencyworse000_virt.best.png
+    stat_Efficiencyprofilerel003.png
+    stat_Efficiencyprofileabs003.png
+```
+
+Este árbol ilustra nombres reales de las familias de salida; los índices
+`000` y `003` pueden cambiar entre informes.
+
+### Páginas principales y tablas auxiliares
+
+| Archivo o patrón | Formato y contenido | Qué información extraer |
+|---|---|---|
+| `index.html` | Portada HTML con modelos, cantidad de instancias, enlaces y opciones de PAVER. | Alcance de la comparación, entrada usada, `failtime`, `mintime`, tolerancias y filtros configurados. |
+| `documentation.html` | Documentación de las métricas incluida con PAVER. | Definiciones de medias, cuantiles, gaps y perfiles de esa instalación. |
+| `solvedata.html` | Tabla HTML detallada por instancia y ejecución. | Objetivo, tiempo, terminación e iteraciones; permite localizar qué casos explican un promedio o una diferencia. |
+| `raw.html` | Atributos internos de instancias y ejecuciones, después de la lectura y el procesamiento. | Valores normalizados, `Fail` y `FailReason`; útil para investigar datos ausentes o inconsistencias. |
+| `stat_Status.html` | Conteos por tipo de terminación y fallas detectadas, cuando las hay. | Cuántas corridas terminaron normalmente, alcanzaron límites o tuvieron problemas. |
+| `stat_SolutionQuality.html` | Estadísticas y comparaciones de calidad, habitualmente sobre `PrimalBound`. | Cuántas soluciones quedan cerca o lejos del mejor resultado observado. |
+| `stat_Efficiency.html` | Estadísticas de tiempo y, si hay datos suficientes, iteraciones o nodos; contiene los gráficos. | Costo computacional, dispersión y diferencias entre algoritmos bajo cada filtro. |
+| `stat_<Categoria>dataNNN.html` | Valores por instancia que alimentan una sección estadística. | Casos concretos incluidos y valores usados después de filtros, sustituciones y recortes. |
+| `stat_<Categoria>ratioNNN_<referencia>.html` | Comparación por instancia con una referencia. | Ratios o diferencias relativas que explican los conteos `better`, `close` y `worse`. |
+| `solvedataaggr.html` | Tabla agregada, si PAVER combina varias ejecuciones de un mismo solver. | Resultados agregados entre repeticiones; contrastar también los datos individuales. |
+
+Los CSV `benchmark.csv`, `*_iterations.csv`, `*_phases.csv`, el JSONL del pool
+y los PNG de layouts los genera **el proyecto**, no PAVER. Complementan el
+informe con información del algoritmo que no está en la traza de ocho campos.
+
+### Cómo leer los nombres
+
+En `stat_Efficiencyboxplot000_virt.best.png`:
+
+- `stat_` indica una salida estadística.
+- `Efficiency` es la categoría; también aparecen `Status` y `SolutionQuality`.
+- `boxplot` identifica el gráfico. Otras familias son `count`, `arithmean`,
+  `geommean`, `sh.geommean`, `close`, `better`, `worse`, `profilerel`,
+  `profileabs` y, si se habilita, `profileext`.
+- `000` identifica una sección del informe, asociada a un atributo y un filtro.
+  No es una instancia ni una iteración de CG. Su significado no es fijo entre corridas.
+- `_virt.best` indica que se compara con el mejor solver virtual. Sin ese sufijo,
+  un boxplot de tiempo muestra segundos; con él, suele mostrar ratios de tiempos.
+- `.png` es la imagen utilizada por el HTML.
+
+Para identificar un gráfico, buscarlo dentro de `stat_Efficiency.html` o la
+página de su categoría y leer **atributo, filtro, unidades y referencia**.
+Los enlaces `Data` llevan a los valores que justifican la tabla.
+
+### Exportaciones opcionales
+
+La integración automática solicita HTML y usa PNG por defecto. PAVER admite
+además las siguientes opciones al regenerar un informe manualmente:
+
+| Opción | Salida adicional |
 |---|---|
-| `index.html` | Resumen y acceso al informe. |
-| `stat_Status.html` | Terminaciones normales, límites y errores. |
-| `solvedata.html` | Objetivo, tiempo y estado por instancia/modelo. |
-| `stat_SolutionQuality.html` | Cantidad de ítems obtenida. |
-| `stat_Efficiency.html` y perfiles | Tiempos y proporción de instancias resueltas. |
+| `--writetext <directorio>` | Tablas de texto: `solvedata.txt`, `attrranges.txt`, `raw.txt`, `options.txt`, `stat_<Categoria>.txt` y archivos de datos, ratios y perfiles. Si hay agregación, también `aggrsolvedata.txt` y `aggrattrranges.txt`. |
+| `--figformat svg` | Gráficos SVG además de las imágenes PNG de previsualización. |
+| `--figformat pdf` | Cada gráfico en PDF además del PNG. No crea un PDF único de todo el informe. |
+| `--extendedprofiles` | Perfiles extendidos, con nombres `stat_<Categoria>profileextNNN.png`, cuando pueden calcularse. |
 
-`virt.best` toma el mejor resultado por instancia; es una referencia virtual.
-Comparar corridas con las mismas instancias y presupuesto: las medias y los
-perfiles dependen de los casos y del tratamiento de límites.
+Los `.txt` son tablas de texto con espacios, no CSV. La salida habitual no
+incluye un libro Excel ni un informe Markdown. Para reproducir una comparación,
+conservar la traza, las opciones y el informe completo.
 
-PAVER informa optimalidad del modelo resuelto. Un maestro entero óptimo sobre
-un pool restringido no certifica el óptimo global del packing. Para interpretar
-los resultados, revisar objetivo, factibilidad y referencia.
+## Qué leer en las tablas
 
-El fixture [paver_smoke.txt](../tests/fixtures/paver_smoke.txt) permite comprobar
-el lector de trazas sin resolver nuevos modelos de optimización.
+### Datos por instancia: `solvedata.html`
+
+Las columnas suelen agruparse por `solver@run`; `@0` identifica una ejecución,
+no una iteración del algoritmo.
+
+| Columna visible | Cómo interpretarla |
+|---|---|
+| `Instance` / `name` | Instancia correspondiente a la fila. |
+| `TermStatus` | Terminación; por ejemplo, `normal` o `timelim`. No equivale al estado de optimalidad del modelo. |
+| `Primal bound` | Objetivo de la solución reportada. En este problema de maximización, más rectángulos es mejor. |
+| `Time` | Tiempo reportado, en segundos. No implica tiempo hasta demostrar el óptimo global. |
+| `Iters` | Iteraciones del método que las informa. Las iteraciones de CG no son directamente comparables con iteraciones internas de CPLEX o de backtracking. |
+| `Dual bound`, `Gap` y otras columnas, si aparecen | Dependen de la información de entrada y de las opciones; verificar que las cotas correspondan al mismo problema. |
+
+Primero comparar objetivos y terminaciones de una misma fila; después, sus
+tiempos. Un algoritmo puede terminar antes y devolver menos rectángulos.
+`NA`, `NaN`, `--` o `-` indican ausencia de información según el archivo.
+`inf` y `-inf` pueden representar cotas o marcadores internos de ausencia;
+no son cantidades de rectángulos. Volver a la traza y a los CSV para resolver
+una duda, sin reemplazar un objetivo ausente por cero.
+
+### Estado: `stat_Status.html`
+
+`normal termination` cuenta terminaciones normales y `exceeded some limit`
+cuenta límites de tiempo, nodos, iteraciones u otros límites. Si existen, otras
+secciones muestran interrupciones, problemas de capacidad, errores y corridas
+marcadas como fallidas.
+
+Estos conteos describen **cómo terminó la ejecución**. Una terminación normal
+puede corresponder a una solución factible, a un modelo restringido óptimo o a
+otro resultado. Un límite puede conservar una buena solución factible.
+Para decidir qué ocurrió, consultar también `ModelStatus` en la traza,
+el objetivo y el diagnóstico del algoritmo.
+
+### Medias, dispersión y cuantiles: `stat_Efficiency.html`
+
+| Fila | Qué mide | Qué permite observar |
+|---|---|---|
+| `count` | Cantidad de datos disponibles bajo ese filtro y tratamiento de valores ausentes. | Base de la comparación. Si los conteos difieren, las medias pueden usar conjuntos distintos. |
+| `arith. mean` | Media aritmética. | Costo promedio; los casos muy lentos tienen mucho peso. |
+| `arith. std.` | Desviación estándar aritmética. | Dispersión entre instancias, en las unidades del atributo. |
+| `geom. mean` | Media geométrica. | Comportamiento multiplicativo; útil cuando los tiempos abarcan varios órdenes de magnitud. |
+| `geom. std.` | Dispersión geométrica. | Variación multiplicativa; no se interpreta como segundos adicionales. |
+| `sh.geom. mean` | Media geométrica desplazada. | Resumen de tiempos con menor sensibilidad a valores casi nulos; depende del desplazamiento informado. |
+| `sh.geom. std.` | Dispersión de los valores desplazados en escala geométrica. | Variabilidad asociada a ese resumen; tampoco está en segundos. |
+| `min` / `max` | Menor y mayor valor del conjunto. | Casos extremos, incluidos recortes o penalizaciones si se aplicaron. |
+| `25.0%`, `50.0%`, `75.0%` | Cuartiles; `50.0%` es la mediana. | Caso central y amplitud de la mitad central de los datos. |
+| `90.0%` | Percentil 90. | Comportamiento de la parte más lenta, además del caso típico. |
+
+Para valores `v_i`, la media geométrica desplazada con parámetro `s` es:
+
+```text
+exp(promedio(log(v_i + s))) - s
+```
+
+En la configuración estándar de PAVER, `timeshift=10` para los tiempos;
+confirmarlo en `index.html` y en la nota `geometric mean shift` de la sección.
+Comparar esa media solo con el mismo desplazamiento y protocolo.
+Una mediana baja con un percentil 90 alto indica muchos casos rápidos y una
+cola de casos difíciles. Esa dispersión entre instancias no mide variabilidad
+entre semillas: para eso hacen falta repeticiones de las mismas instancias.
+
+### Referencias virtuales y comparación relativa
+
+`virt. best` elige el mejor valor **por instancia y por atributo** entre los
+algoritmos incluidos. Para tiempo, elige el menor; para cantidad de rectángulos,
+el mayor. `virt. worst` representa el peor, sujeto a disponibilidad de datos.
+No son algoritmos ejecutables, y el mejor tiempo y el mejor objetivo pueden
+provenir de métodos diferentes. En los nombres de archivo aparecen sin espacios:
+`virt.best` y `virt.worst`.
+
+En una tabla de ratios de tiempo respecto de `virt. best`:
+
+```text
+ratio = tiempo_del_algoritmo / menor_tiempo_de_la_instancia
+```
+
+`1` significa igualar el mejor tiempo; `2`, tardar el doble; `10`, diez veces
+ese tiempo. La media de estos ratios no equivale al cociente de las medias
+de tiempo. Para objetivos positivos de maximización, un ratio objetivo/mejor
+objetivo cercano a `1` indica mayor cercanía al mejor resultado observado.
+En ciertos atributos, cuando no se calculan ratios, el archivo `ratio...`
+contiene diferencias relativas: revisar el atributo y la tabla que lo enlaza.
+
+| Fila o gráfico | Significado respecto de la referencia |
+|---|---|
+| `better` | Cantidad de casos con mejora que alcanza las tolerancias configuradas. |
+| `close` | Casos que no se clasifican como mejores ni peores según esas tolerancias. |
+| `worse` | Casos con deterioro que alcanza las tolerancias configuradas. |
+
+`close` no significa igualdad exacta ni optimalidad. La configuración estándar
+usa tolerancia relativa `0.1` para tiempos y objetivos; en tiempos agrega la
+absoluta `mintime`. Si ambas están presentes, la diferencia debe alcanzar ambas
+para clasificarse como mejor o peor. La diferencia relativa usada aquí se
+normaliza por `max(1, abs(valor), abs(referencia))` y no coincide necesariamente
+con un gap respecto de la literatura. Leer las tolerancias impresas en cada bloque.
+
+Por ejemplo, con mejor objetivo `20`, obtener `19` puede contarse como `close`
+con tolerancia `0.1`, aunque falte un rectángulo. Para contar coincidencias
+exactas, usar los objetivos por instancia. Frente a `virt. best`, `better`
+debe ser cero por definición; `close` indica cercanía según la tolerancia.
+
+### Filtros y tratamiento de límites
+
+Cada bloque tiene su propio `Filter`. Los más habituales son:
+
+| Filtro | Casos incluidos |
+|---|---|
+| `all instances` | Todas las instancias para ese análisis, con las sustituciones indicadas. |
+| `no fail` | Datos no marcados como fallidos para cada solver. Puede cambiar el conjunto entre algoritmos. |
+| `no fail by all solver` | Instancias sin fallas detectadas para ninguno de los algoritmos. |
+| `time >= 10.0 by at least one solver and no fail for all solvers` | Subconjunto sin fallas en todos los algoritmos en el que al menos uno tardó 10 segundos o más. El umbral depende de `filtertime`. |
+
+`Fail=False` expresa el resultado de los controles de PAVER; **no acredita
+optimalidad ni verifica por sí solo la geometría del packing**. Un `TimeLimit`
+no se marca automáticamente como falla en la configuración estándar, por lo
+que puede aparecer dentro de `no fail`.
+
+La sección puede indicar, por ejemplo:
+
+```text
+Attribute values were projected onto interval [0.001, 1200.0].
+Missing values and values for failed instances substituted by 1200.0.
+```
+
+Esto significa que las estadísticas usan tiempos recortados a ese intervalo
+y sustituyen faltantes o fallas por `failtime`. Un tiempo real de `1200.4`
+puede entrar como `1200`; consultar `solvedata.html` o la traza para el valor
+reportado originalmente. Los casos con límite conservan su estado de límite.
+Estas transformaciones también afectan ratios, medias, boxplots y perfiles.
+
+Comparar el bloque de todas las instancias junto con los bloques filtrados.
+Informar siempre cuántos casos entran: excluir los problemas difíciles o usar
+`failtime` distinto puede cambiar la conclusión.
+
+## Qué información sacar de los gráficos
+
+### Barras de conteos, medias y comparaciones
+
+| Patrón del PNG | Qué muestra | Qué concluir de él |
+|---|---|---|
+| `*countNNN.png` | Número de casos que cumplen un filtro, por ejemplo terminación normal. | Frecuencia del evento; relacionarla con el total de instancias. |
+| `*arithmeanNNN.png` | Media aritmética del atributo. | Para tiempo, barras más bajas indican menor costo promedio bajo ese filtro. |
+| `*geommeanNNN.png` / `*sh.geommeanNNN.png` | Medias geométricas, sin desplazamiento o con él. | Resumen complementario del costo; mantener iguales filtros y desplazamiento. |
+| `*betterNNN_<ref>.png` | Casos mejores que la referencia según tolerancias. | Ventajas detectadas respecto de esa referencia. |
+| `*closeNNN_<ref>.png` | Casos cercanos a la referencia según tolerancias. | Cobertura de resultados considerados similares. |
+| `*worseNNN_<ref>.png` | Casos peores que la referencia según tolerancias. | Frecuencia de desventajas. |
+
+Una etiqueta `8 / 12` en los gráficos de comparación indica ocho casos de doce,
+no un valor de objetivo ni ocho segundos. Las barras de medias resumen los
+datos; consultar la tabla o el boxplot para conocer su dispersión.
+
+### Boxplots: `*boxplotNNN*.png`
+
+El eje horizontal identifica algoritmos y el vertical el atributo o su ratio.
+La línea dentro de la caja es la mediana; la caja va del percentil 25 al 75.
+Los bigotes llegan a los datos extremos dentro de 1.5 veces el rango
+intercuartílico desde cada borde; los puntos restantes son valores atípicos.
+
+Para tiempo, una mediana baja muestra menor tiempo central y una caja estrecha,
+menor dispersión central entre instancias. Una caja estrecha puede coexistir
+con casos muy lentos fuera de ella. Los atípicos merecen revisión por instancia;
+no son necesariamente errores. Si el archivo termina en `_virt.best`, leer el
+eje como ratio cuando corresponda: una mediana `2` significa que el ratio de
+tiempo central es dos, no que la mediana de tiempo sea dos segundos.
+
+### Perfil absoluto: `*profileabsNNN.png`
+
+Para `SolverTime`, el eje X es un umbral de tiempo en segundos. El eje Y de
+esta versión de PAVER es la **cantidad acumulada de instancias** cuyo tiempo
+usado en el análisis no supera el umbral, bajo el filtro indicado.
+
+Por ejemplo, si en `x=60` la curva alcanza `y=18`, hay 18 casos con tiempo
+analizado menor o igual a 60 segundos. Si el filtro contiene 30 instancias,
+es el 60% de ese conjunto. Una curva más alta a igual tiempo indica mayor
+cobertura de casos dentro de ese presupuesto.
+
+Antes de llamarlos «casos resueltos», verificar el criterio de éxito: con
+recortes y sustituciones a `failtime`, una subida al final puede incluir
+límites o fallas penalizadas. El perfil de tiempo por sí solo no establece
+que se obtuviera una solución óptima, ni siquiera un entero disponible en CG.
+
+### Perfil relativo: `*profilerelNNN.png`
+
+Para tiempos, el eje X es el factor respecto del menor tiempo de cada instancia:
+
+```text
+r(instancia, algoritmo) = tiempo(instancia, algoritmo)
+                         / min_algoritmos(tiempo(instancia, algoritmo))
+Y(tau) = cantidad de instancias con r <= tau, bajo el filtro indicado
+```
+
+- Cerca de `x=1`, la altura muestra cuántos casos igualan el mejor tiempo.
+- En `x=2`, muestra cuántos tardan como máximo el doble del mejor.
+- En `x=10`, cuántos tardan como máximo diez veces el mejor.
+
+Si `Y(2)=24` sobre 30 casos, el algoritmo queda dentro de un factor dos del
+mejor en el 80% de ese conjunto. Una curva más alta para un mismo factor muestra
+mayor cobertura relativa. Si las curvas se cruzan, la preferencia depende del
+factor aceptable; no hay un ganador único para todos los umbrales.
+
+El eje X suele ser logarítmico: distancias iguales representan factores, no
+sumas iguales de segundos. La altura final cuenta valores admitidos por el
+análisis y su filtro, no certificaciones de óptimo. Con penalizaciones finitas,
+las curvas pueden terminar todas en el total aunque existan fallas o límites.
+
+### Perfil extendido, si se solicita: `*profileextNNN.png`
+
+Compara el tiempo de cada algoritmo contra el mejor tiempo de los **otros**
+algoritmos, excluyéndolo del denominador. Por eso puede haber ratios menores
+que uno, que indican ventaja frente a todos los competidores. No mezclar su
+lectura con la del perfil relativo habitual, que incluye al propio algoritmo.
+
+## Qué llevar del informe a una comparación experimental
+
+| Pregunta | Dónde buscar | Qué registrar |
+|---|---|---|
+| ¿Qué calidad final alcanza cada algoritmo? | `solvedata.html`, `stat_SolutionQuality.html` y CSV del benchmark. | Objetivo por instancia, cantidad de coincidencias exactas con una referencia y casos sin solución. |
+| ¿Cuánto cuesta obtener ese resultado? | `stat_Efficiency.html`, medias, boxplots y perfiles. | Mediana, media geométrica desplazada con su parámetro, percentil 90 y cobertura temporal. |
+| ¿Con qué frecuencia alcanza un límite o falla? | `stat_Status.html`, traza y `raw.html`. | Conteos separados de límites, errores, ausencia de solución y terminaciones normales. |
+| ¿En qué casos cambia el comportamiento? | Enlaces `Data` y archivos `ratio...`. | Instancias que explican pérdidas de calidad, ratios altos o atípicos. |
+| ¿Por qué cambia el rendimiento de CG? | CSV de iteraciones/fases y JSONL del pool. | Tiempo de maestro y pricing, columnas generadas y evidencia de cierre; la traza PAVER no contiene ese detalle. |
+
+Una redacción reproducible debe indicar conjunto de instancias, hardware,
+presupuesto, semillas, hilos, configuración de cada algoritmo, filtro,
+tolerancias y tratamiento de faltantes. Informar mejoras de tiempo junto con
+calidad y estados. Los perfiles describen el conjunto medido; no garantizan
+el mismo comportamiento en otras familias de instancias.
+
+Para interpretar estos resultados en el problema del proyecto:
+
+- Se maximiza la cantidad de rectángulos idénticos en un solo contenedor.
+  Una mayor cantidad factible representa mejor calidad.
+- Los modelos con y sin rotación tienen distintos espacios factibles. Mantener
+  su identificación y aclarar esa diferencia al comparar calidad y tiempo.
+- La terminación normal y `ModelStatus=1` se refieren al modelo resuelto.
+  Un maestro entero óptimo sobre el pool generado no certifica por sí solo
+  el óptimo global del packing.
+- El último LP restringido no es una cota superior del maestro completo si
+  falta evidencia de cierre. Revisar `lp_convergence_proven` y su diagnóstico.
+- `virt. best` es el mejor valor observado entre los algoritmos del informe.
+  No es automáticamente la referencia de literatura ni una prueba de óptimo.
+- La integración usa `--ignoredualbounds`; no interpretar el informe como una
+  comparación de certificados duales globales. La referencia de literatura se
+  conserva en el benchmark, pero no se transmite en la traza de ocho campos.
+- Una solución entera ausente permanece ausente. La factibilidad geométrica,
+  el objetivo LP, el entero restringido y la referencia son evidencias distintas.
+
+Las convenciones de tablas y gráficos se pueden contrastar con la
+[documentación de PAVER](https://github.com/coin-or/Paver/blob/master/src/paver/documentation.html)
+y su [implementación de estadísticas](https://github.com/coin-or/Paver/blob/master/src/paver/solvestat.py).
+El [repositorio oficial](https://github.com/coin-or/Paver) identifica la herramienta
+y su publicación de referencia. En el proyecto, el fixture
+[paver_smoke.txt](../tests/fixtures/paver_smoke.txt) permite comprobar el lector
+de trazas sin resolver nuevos modelos de optimización.

@@ -7,6 +7,7 @@ the number of identical items, and extended with ninety-degree rotations.
 """
 
 import cplex
+from instances import CaseRepository
 from utils.model_functions import *
 from utils.execution_runner import TimedModelExecutor
 from config import *
@@ -33,12 +34,27 @@ def calculate_physical_item_bound():
 
 
 def create_model(max_time):
+    # Validate before treating the absence of feasible placements as optimum zero.
+    CaseRepository({CASE_NAME: {
+        "bin_width": BIN_WIDTH,
+        "bin_height": BIN_HEIGHT,
+        "item_width": ITEM_WIDTH,
+        "item_height": ITEM_HEIGHT,
+    }}).get(CASE_NAME)
+
     # Create a CPLEX model
     model = cplex.Cplex()
     model.set_results_stream(None)  # Disable detailed CPLEX logs
     model.set_problem_type(cplex.Cplex.problem_type.MILP)
     model.objective.set_sense(model.objective.sense.maximize)
     model.parameters.timelimit.set(max_time)
+
+    fits = ((ITEM_WIDTH <= BIN_WIDTH and ITEM_HEIGHT <= BIN_HEIGHT)
+            or (ITEM_HEIGHT <= BIN_WIDTH and ITEM_WIDTH <= BIN_HEIGHT))
+    if not fits:
+        # Neither orientation fits, so the empty packing is the only solution.
+        # Omit candidates: their separation rows otherwise constrain f_i = 0.
+        return model
 
     # Define variables and objective
     items = list(range(1, calculate_physical_item_bound() + 1))

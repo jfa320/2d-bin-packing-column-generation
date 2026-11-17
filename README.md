@@ -48,6 +48,18 @@ permite ejecutar un control explícito de una columna.
 
 Los modelos de comparación fueron adaptados a partir de formulaciones o enfoques que no coincidían exactamente con el alcance de esta tesina. En particular, algunas formulaciones originales consideran múltiples tipos de ítems, múltiples tamaños o restricciones adicionales, como prioridades entre ítems.
 
+Para dimensiones enteras positivas, `PisingerSigurd2005Rotation` comprueba si
+alguna orientación del ítem cabe en el contenedor. Si ninguna cabe, el packing
+vacío es la única solución: se construye un modelo vacío cuyo MIP y LP tienen
+óptimo 0. Por ejemplo, un contenedor de 5×5 con ítems de 6×1 tiene capacidad 0
+aunque el cociente de áreas sea mayor que cero. Las dimensiones inválidas se
+rechazan antes de esta comprobación.
+
+Cuando alguna orientación cabe, se conserva la formulación con sus Big-M y
+la cota de candidatos `floor(área_bin / área_ítem)`. Su LP se utiliza como
+control de cota de área; el tratamiento del dominio vacío conserva esa
+interpretación, sin atribuir una relajación más fuerte al comparador.
+
 Las referencias que identifican los nombres de ejecución son:
 
 - Pisinger, D. y Sigurd, M. (2005). *The two-dimensional bin packing problem with variable bin sizes and costs*. Discrete Optimization, 2(2), 154–167. [DOI: 10.1016/j.disopt.2005.01.002](https://doi.org/10.1016/j.disopt.2005.01.002). Se adapta la formulación de la sección 2, ecuación (4).

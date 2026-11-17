@@ -200,11 +200,8 @@ def test_batch_cg_geometry_certificates_and_metrics(run_cg, mode, dimensions, op
     assert not result.execution.error_message
     assert result.metrics.lp_value == pytest.approx(optimum)
     assert result.metrics.restricted_integer_master == optimum
-    if not result.diagnostics.lp_convergence_proven:
-        # Bounded master variables can leave a positive duplicate at closure;
-        # retrieving alternatives must never turn that into a false certificate.
-        assert result.diagnostics.cg_stop_reason == "duplicate"
-        assert result.diagnostics.pricing_objective > 0
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.cg_stop_reason == "pricing_converged"
     assert result.metrics.lp_pool_size == result.metrics.integer_pool_size == result.metrics.pool_size
     assert result.metrics.generated_columns == sum(row.generated_columns for row in result.iterations)
     assert result.metrics.pool_extra_columns == sum(row.pool_extra_columns for row in result.iterations)
@@ -217,6 +214,57 @@ def test_batch_cg_geometry_certificates_and_metrics(run_cg, mode, dimensions, op
     if mode == "passive":
         assert result.metrics.pool_calls == 0
         assert result.metrics.pool_search_time_s == 0
+
+
+@pytest.mark.parametrize("greedy", [False, True])
+@pytest.mark.parametrize("second,enrichment,retries", product((False, True), repeat=3))
+def test_single_rectangle_certifies_closure_with_fixed_pool(
+        run_cg, monkeypatch, greedy, second, enrichment, retries):
+    from models.column_generation import column_generation_solver as cg
+    from models.column_generation.slave_problem import IncrementalPricingModel
+
+    sessions, prepared = [], []
+
+    def state(model):
+        return (model.variables.get_names(), model.linear_constraints.get_names(),
+                model.objective.get_linear(), model.objective.get_sense())
+
+    class ObservedPricing(IncrementalPricingModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            sessions.append(self)
+
+        def prepare(self, duals):
+            model = super().prepare(duals)
+            prepared.append(model)
+            self.expected_state = state(model)
+            return model
+
+        def close(self):
+            if self.model is not None:
+                assert state(self.model) == self.expected_state
+            super().close()
+
+    monkeypatch.setattr(cg.config, "USE_DUAL_STABILIZATION", False)
+    monkeypatch.setattr(cg, "IncrementalPricingModel", ObservedPricing)
+    result = run_cg(
+        PricingPoolOptions(mode="passive", max_columns=5, capacity=20, intensity=1),
+        dimensions=(3, 2, 3, 2), pricing_mode="reuse", random_seed=0, threads=1,
+        use_greedy_pricing=greedy, use_pricing_second_phase=second,
+        use_pricing_final_enrichment=enrichment, use_pricing_duplicate_retries=retries)
+
+    assert not result.execution.error_message
+    assert result.execution.termination_status == "Normal"
+    assert result.metrics.initial_lp_value == result.metrics.lp_value == 1
+    assert result.metrics.restricted_integer_master == 1
+    assert result.diagnostics.lp_convergence_proven
+    assert result.diagnostics.convergence_basis == "optimal_pricing"
+    assert result.diagnostics.cg_stop_reason == "pricing_converged"
+    assert result.diagnostics.pricing_objective <= cg.EPS
+    assert result.diagnostics.pricing_best_bound <= cg.EPS
+    assert len(sessions) == sessions[0].build_count == 1
+    assert all(model is prepared[0] for model in prepared)
+    assert sessions[0].model is None
 
 
 def test_one_column_option_preserves_default_path(run_cg, monkeypatch):

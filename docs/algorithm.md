@@ -117,8 +117,22 @@ sum(p_s, s que cubre la celda (x,y)) <= 1   para cada celda cubierta
 ```
 
 La ocupación de una columna es la unión de las celdas de sus ítems; el
-coeficiente columna/celda es 1. Las variables `p_s` se relajan a continuas
-entre 0 y 1 durante CG y son binarias en el maestro entero final.
+coeficiente columna/celda es 1. Durante CG las variables `p_s` son continuas
+no negativas, sin cota superior explícita para las columnas no vacías. Si una
+columna cubre una celda, su variable es uno de los términos no negativos de
+una suma menor o igual a 1; por eso `p_s <= 1` ya está implícito. Retirar esa
+cota redundante conserva la región factible del LP. Las columnas vacías tienen
+objetivo cero y conservan la cota superior 1. El maestro entero final usa
+variables binarias.
+
+Antes de cada resolución, `MasterSolver` aplica el dominio correspondiente a
+todas las variables, incluidas las incorporadas incrementalmente o por una
+reconstrucción del maestro. Convertir un modelo binario a LP no elimina por
+sí solo sus cotas superiores. Conservarlas permite que sus multiplicadores
+absorban parte del precio dual, mientras el pricing recibe únicamente los
+duales de celda: una columna existente podría aparecer como positiva. Sin
+esas cotas redundantes, los duales de celda de un RMP óptimo satisfacen
+`suma(pi de las celdas de s) >= cantidad_de_items(s)` para sus columnas.
 
 El extractor transforma `consItem_x_y` en `dual_prices["pi"]["(x,y)"]`. El
 pricing usa precio cero para las celdas sin entrada dual y maximiza:
@@ -126,6 +140,18 @@ pricing usa precio cero para las celdas sin entrada dual y maximiza:
 ```text
 valor(s) = cantidad_de_items(s) - suma(pi de las celdas ocupadas por s)
 ```
+
+Por ejemplo, para un contenedor de 3×2 y un ítem de 3×2, las seis filas de
+ocupación ya limitan la única columna no vacía a 1. El LP vale 1 y la suma de
+sus precios de celda es 1, de modo que el pricing tiene valor óptimo 0 y puede
+certificar el cierre.
+
+El valor de un patrón es la suma de los scores de sus colocaciones. Como toda
+colocación admisible puede formar una columna de un solo ítem, comprobar que
+todos esos scores son no positivos equivale a comprobar que ningún patrón es
+positivo. Esa propiedad permite estudiar un chequeo por columnas de un ítem
+como mejora opcional; la implementación conserva el pricing de patrones y la
+evidencia de cierre descrita más abajo.
 
 Una colocación aporta `1 - suma(pi de sus celdas)`. Con
 `USE_PRICING_SOLUTION_POOL=False`, el flujo base devuelve una solución por
