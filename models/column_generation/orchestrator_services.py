@@ -222,12 +222,6 @@ class SolutionMapper:
     def denormalize(self, slices, normalized_problem):
         if not normalized_problem.normalized_bin and not normalized_problem.normalized_item:
             return slices
-        slice_height = calculate_slice_height(
-            normalized_problem.original_bin_width,
-            normalized_problem.original_bin_height,
-            normalized_problem.original_item_width,
-            normalized_problem.original_item_height,
-        )
         output = []
         for slice_ in slices:
             items = []
@@ -248,8 +242,12 @@ class SolutionMapper:
                              ^ normalized_problem.normalized_item),
                     position_x=original_x, position_y=original_y,
                 ))
+            # The pricing window belongs to the normalized search. Rotating the
+            # bin back makes the strip vertical, with its full width as height;
+            # do not estimate a new horizontal window from the original items.
             output.append(Slice(
-                height=slice_height,
+                height=(slice_.get_width() if normalized_problem.normalized_bin
+                        else slice_.get_height()),
                 width=normalized_problem.original_bin_width,
                 items=items,
             ))
