@@ -226,9 +226,18 @@ versiones del solver.
 ## Cierre LP y solución entera
 
 `cg_stop_reason` informa por qué terminó el ciclo y `lp_convergence_proven`
-indica si existe una prueba suficiente de cierre. Para probarlo se requiere
-un LP válido y óptimo y, con sus duales originales, un pricing principal óptimo
+indica si existe una prueba suficiente de cierre. Durante el ciclo de CG se
+requiere un LP válido y óptimo y, con sus duales originales, un pricing principal óptimo
 con valor no positivo o una cota superior finita menor o igual a `EPS`.
+
+Si ninguna orientación del ítem cabe en el contenedor, la geometría certifica
+directamente el óptimo LP e IP igual a cero y el layout vacío. Se devuelve
+estado óptimo y terminación normal, con `cg_stop_reason="empty_domain"`,
+`lp_convergence_proven=True` y `convergence_basis="empty_domain"`. Esta salida
+ocurre antes de calcular rebanadas y construir modelos CPLEX. Los estados de
+las fases no ejecutadas, sus códigos CPLEX, `initial_lp_value`, `lp_pool_size`
+e `integer_pool_size` permanecen ausentes; no se registran iteraciones ni se
+exporta un PNG. La ausencia de posiciones por sí sola no aporta este certificado.
 
 Un incumbente no positivo tras un límite, sin cota suficiente, no demuestra
 convergencia. Tampoco la demuestran un duplicado, la segunda fase con otro

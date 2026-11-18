@@ -14,7 +14,7 @@ from models.column_generation.pricing_options import resolve_pricing_heuristics
 from objects import Item, Slice
 from utils.cplex_helpers import add_constraint_set, add_variables
 from utils.paver_constants import PaverConstants
-from utils.status_normalizer import map_cplex_mip_status
+from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
 
 MODEL_NAME = "Model5SlaveAlternative"
 DISABLE_DUPLICATE_CONSTRAINT_CHECK = True
@@ -422,7 +422,10 @@ class SlaveSolver:
     def _report_status(model, queue, pricing_stage="primary"):
         raw_status = model.solution.get_status()
         reported_feasible = model.solution.is_primal_feasible()
-        state = map_cplex_mip_status(
+        # With no placement variables, the pricing builder leaves an LP.
+        is_lp = model.get_problem_type() == cplex.Cplex.problem_type.LP
+        mapper = map_cplex_lp_status if is_lp else map_cplex_mip_status
+        state = mapper(
             raw_status, has_feasible_solution=reported_feasible
         )
         objective = None
@@ -437,7 +440,8 @@ class SlaveSolver:
                     pass
             if state.model_status == PAVER.MODEL_STATUS_OPTIMAL:
                 best_bound = objective
-            elif (state.model_status in {PAVER.MODEL_STATUS_FEASIBLE, PAVER.MODEL_STATUS_NO_SOLUTION}
+            elif (not is_lp
+                  and state.model_status in {PAVER.MODEL_STATUS_FEASIBLE, PAVER.MODEL_STATUS_NO_SOLUTION}
                   and state.termination_status != PAVER.TERMINATION_ERROR):
                 try:
                     best_bound = SlaveSolver._finite_value(model.solution.MIP.get_best_objective())

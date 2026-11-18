@@ -159,7 +159,11 @@ class _CGProgress:
             current.snapshot_time_s = now
         if not self.finished and self.ip_started is None:
             metrics = replace(metrics, cg_time_s=now - self.started)
-        if metrics.restricted_integer_master is not None:
+        if (self.diagnostics.convergence_basis == "empty_domain"
+                and self.diagnostics.lp_convergence_proven
+                and self.termination == PAVER.TERMINATION_NORMAL and not self.error):
+            model_status = PAVER.MODEL_STATUS_OPTIMAL
+        elif metrics.restricted_integer_master is not None:
             model_status = PAVER.MODEL_STATUS_FEASIBLE
         elif self.termination == PAVER.TERMINATION_ERROR or self.error:
             model_status = PAVER.MODEL_STATUS_ERROR
@@ -295,6 +299,15 @@ class _CGProgress:
     def stop_cg(self, reason):
         self.diagnostics = replace(self.diagnostics, cg_stop_reason=reason)
         self.snapshot()
+
+    def complete_empty_domain(self):
+        """Certify the empty packing without inventing completed solver phases."""
+        self.metrics = replace(self.metrics, lp_value=0.0, restricted_integer_master=0.0)
+        self.diagnostics = replace(
+            self.diagnostics, cg_stop_reason="empty_domain",
+            lp_convergence_proven=True, convergence_basis="empty_domain",
+        )
+        self.finish()
 
     def finish(self):
         self._freeze_phase()
@@ -485,6 +498,16 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
         Slice.reset_id_counter()
 
         normalized_problem = ProblemNormalizer().normalize(config_data)
+        if not normalized_problem.has_feasible_orientation:
+            progress.complete_empty_domain()
+            if return_structured:
+                result = progress.result()
+                progress.queue.put({"result": replace(result, iterations=[]), "finished": True})
+                return result
+            if return_solution:
+                return 0, []
+            return 0
+
         bin_width = normalized_problem.bin_width
         bin_height = normalized_problem.bin_height
         item_width = normalized_problem.item_width

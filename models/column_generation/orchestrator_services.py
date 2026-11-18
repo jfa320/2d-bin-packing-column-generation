@@ -23,6 +23,14 @@ class NormalizedProblem:
     normalized_item: bool
 
     @property
+    def has_feasible_orientation(self):
+        return (
+            self.item_width <= self.bin_width and self.item_height <= self.bin_height
+        ) or (
+            self.item_height <= self.bin_width and self.item_width <= self.bin_height
+        )
+
+    @property
     def slice_height(self):
         return calculate_slice_height(
             self.bin_width, self.bin_height, self.item_width, self.item_height
@@ -37,6 +45,12 @@ class ProblemNormalizer:
             config_data.get_bin_width(), config_data.get_bin_height(),
             config_data.get_item_width(), config_data.get_item_height(),
         )
+        # A geometric zero certificate requires valid discrete dimensions.
+        for name, value in zip(
+            ("bin_width", "bin_height", "item_width", "item_height"), original
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
         bin_width, bin_height, item_width, item_height = original
         normalized_bin = bin_height > bin_width
         normalized_item = item_height > item_width

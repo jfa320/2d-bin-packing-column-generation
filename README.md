@@ -60,6 +60,41 @@ la cota de candidatos `floor(área_bin / área_ítem)`. Su LP se utiliza como
 control de cota de área; el tratamiento del dominio vacío conserva esa
 interpretación, sin atribuir una relajación más fuerte al comparador.
 
+`AndradeBirgin2013BigM` conserva los centros, las orientaciones y las cuatro
+desigualdades de separación Big-M de la ecuación (4) del artículo. El modelo
+original exige colocar una cantidad fija de rectángulos; la adaptación al MPLP
+maximiza `sum(f_i)` sobre `N = floor(área_bin / área_ítem)` copias opcionales.
+La cota de área limita los candidatos, sin obligar a colocarlos todos.
+
+Para vincular esa selección con la geometría se mantienen los centros dentro
+de `[0,W] × [0,H]`, incluso para copias omitidas. Con `D = max(w,h)` y
+`C = D/2`, la contención se escribe como:
+
+```text
+cx_i - w_i/2 >= -C(1-f_i),  cx_i + w_i/2 <= W + C(1-f_i)
+cy_i - h_i/2 >= -C(1-f_i),  cy_i + h_i/2 <= H + C(1-f_i)
+```
+
+Cada desigualdad original de separación recibe además `-M(2-f_i-f_j)`
+en su lado derecho, con el Big-M del eje correspondiente. Cuando ambas copias
+están seleccionadas se recupera exactamente la separación del artículo; al
+omitir cualquiera, las cuatro desigualdades quedan desactivadas. Esto es válido
+porque las dimensiones efectivas no superan `D` y la expresión de separación
+horizontal está acotada inferiormente por `-W-D`: el valor conservado
+`M_w = 2W+2D` es suficiente, al igual que `M_h = 2H+2D` en vertical. Para la
+contención, `C = D/2` basta por las cotas de los centros. Así, cualquier packing
+puede extenderse con copias omitidas y cualquier solución entera selecciona un
+packing factible, incluida la solución vacía si ningún ítem cabe.
+
+Por ejemplo, un contenedor de 3×3 con ítems de 2×2 tiene dos candidatos y
+óptimo entero 1. Su relajación LP puede alcanzar 2: es una cota superior, no un
+layout factible ni una prueba de igualdad con el óptimo entero. Las pruebas de
+`tests/test_andrade_birgin.py` verifican la selección, las cuatro separaciones,
+la geometría, la rotación y las cotas LP frente a enumeración independiente.
+Las infactibilidades históricas obtenidas sin vincular `f_i` a la geometría no
+certifican la imposibilidad de un packing parcial y requieren reejecución;
+los tiempos anteriores tampoco describen la formulación corregida.
+
 Las referencias que identifican los nombres de ejecución son:
 
 - Pisinger, D. y Sigurd, M. (2005). *The two-dimensional bin packing problem with variable bin sizes and costs*. Discrete Optimization, 2(2), 154–167. [DOI: 10.1016/j.disopt.2005.01.002](https://doi.org/10.1016/j.disopt.2005.01.002). Se adapta la formulación de la sección 2, ecuación (4).

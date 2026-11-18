@@ -4,6 +4,8 @@ Symmetry-breaking constraints for packing identical rectangles within polyhedra.
 Optimization Letters 7, 375-405. DOI: 10.1007/s11590-011-0425-9.
 Uses the Section 2, equation (4) formulation for a rectangular bin; it does not
 include the symmetry-breaking constraints introduced in Section 3.
+Optional selection is a local extension: containment is active for selected
+items and the four separation inequalities are active for selected pairs.
 """
 
 import cplex
@@ -31,15 +33,22 @@ class AndradeBirgin2013ModelBuilder:
         model.parameters.timelimit.set(max_time)
 
         max_item_dim = max(self.item_width, self.item_height)
-        big_m_x = 2 * self.bin_width + 2 * max_item_dim
-        big_m_y = 2 * self.bin_height + 2 * max_item_dim
+        containment_m = 0.5 * max_item_dim
+        M_w = 2 * self.bin_width + 2 * max_item_dim
+        M_h = 2 * self.bin_height + 2 * max_item_dim
         items = list(range(1, self.physical_item_bound() + 1))
 
         add_variables(model, [f"f_{i}" for i in items], [1.0] * len(items), "B")
         add_variables(model, [f"r_{i}" for i in items], [0.0] * len(items), "B")
         centers = [f"cx_{i}" for i in items] + [f"cy_{i}" for i in items]
         add_variables(model, centers, [0.0] * len(centers), "C")
-        effective = [f"wEff_{i}" for i in items] + [f"hEff_{i}" for i in items]
+        # Keep these bounds even for omitted items. With effective dimensions
+        # <= max_item_dim, they make all selection deactivations valid.
+        model.variables.set_upper_bounds(
+            [(f"cx_{i}", self.bin_width) for i in items]
+            + [(f"cy_{i}", self.bin_height) for i in items]
+        )
+        effective = [f"w_{i}" for i in items] + [f"h_{i}" for i in items]
         add_variables(model, effective, [0.0] * len(effective), "C")
 
         relative = []
@@ -51,38 +60,66 @@ class AndradeBirgin2013ModelBuilder:
 
         delta = self.item_height - self.item_width
         for i in items:
-            add_constraint(model, [1.0, -delta], [f"wEff_{i}", f"r_{i}"], self.item_width, "E")
-            add_constraint(model, [1.0, delta], [f"hEff_{i}", f"r_{i}"], self.item_height, "E")
+            add_constraint(model, [1.0, -delta], [f"w_{i}", f"r_{i}"], self.item_width, "E")
+            add_constraint(model, [1.0, delta], [f"h_{i}", f"r_{i}"], self.item_height, "E")
 
         for i in items:
-            add_constraint(model, [1.0, -0.5], [f"cx_{i}", f"wEff_{i}"], 0.0, "G")
-            add_constraint(model, [1.0, 0.5], [f"cx_{i}", f"wEff_{i}"], self.bin_width, "L")
-            add_constraint(model, [1.0, -0.5], [f"cy_{i}", f"hEff_{i}"], 0.0, "G")
-            add_constraint(model, [1.0, 0.5], [f"cy_{i}", f"hEff_{i}"], self.bin_height, "L")
+            # Original containment when f_i=1; redundant within the center
+            # bounds when f_i=0, even if neither orientation fits the bin.
+            add_constraint(
+                model, [1.0, -0.5, -containment_m],
+                [f"cx_{i}", f"w_{i}", f"f_{i}"], -containment_m, "G",
+            )
+            add_constraint(
+                model, [1.0, 0.5, containment_m],
+                [f"cx_{i}", f"w_{i}", f"f_{i}"],
+                self.bin_width + containment_m, "L",
+            )
+            add_constraint(
+                model, [1.0, -0.5, -containment_m],
+                [f"cy_{i}", f"h_{i}", f"f_{i}"], -containment_m, "G",
+            )
+            add_constraint(
+                model, [1.0, 0.5, containment_m],
+                [f"cy_{i}", f"h_{i}", f"f_{i}"],
+                self.bin_height + containment_m, "L",
+            )
 
+        # Subtract M * (2-f_i-f_j) from each original right-hand side.
+        # For a selected pair this is exactly equation (4). Otherwise every
+        # branch is redundant: cx_i-cx_j-(w_i+w_j)/2 >= -W-max_item_dim,
+        # and M_w >= W+max_item_dim (analogously in y).
         for i in items:
             for j in items:
                 if i >= j:
                     continue
                 q_ij, q_ji = f"q_{i},{j}", f"q_{j},{i}"
                 add_constraint(
-                    model, [1.0, -1.0, -0.5, -0.5, big_m_x, big_m_x],
-                    [f"cx_{i}", f"cx_{j}", f"wEff_{i}", f"wEff_{j}", q_ij, q_ji],
-                    0.0, "G",
+                    model, [1.0, -1.0, -0.5, -0.5, M_w, M_w,
+                            -M_w, -M_w],
+                    [f"cx_{i}", f"cx_{j}", f"w_{i}", f"w_{j}",
+                     q_ij, q_ji, f"f_{i}", f"f_{j}"],
+                    -2 * M_w, "G",
                 )
                 add_constraint(
-                    model, [1.0, -1.0, -0.5, -0.5, -big_m_x, -big_m_x],
-                    [f"cx_{j}", f"cx_{i}", f"wEff_{i}", f"wEff_{j}", q_ij, q_ji],
-                    -2 * big_m_x, "G",
+                    model, [1.0, -1.0, -0.5, -0.5, -M_w, -M_w,
+                            -M_w, -M_w],
+                    [f"cx_{j}", f"cx_{i}", f"w_{i}", f"w_{j}",
+                     q_ij, q_ji, f"f_{i}", f"f_{j}"],
+                    -4 * M_w, "G",
                 )
                 add_constraint(
-                    model, [1.0, -1.0, -0.5, -0.5, -big_m_y, big_m_y],
-                    [f"cy_{i}", f"cy_{j}", f"hEff_{i}", f"hEff_{j}", q_ij, q_ji],
-                    -big_m_y, "G",
+                    model, [1.0, -1.0, -0.5, -0.5, -M_h, M_h,
+                            -M_h, -M_h],
+                    [f"cy_{i}", f"cy_{j}", f"h_{i}", f"h_{j}",
+                     q_ij, q_ji, f"f_{i}", f"f_{j}"],
+                    -3 * M_h, "G",
                 )
                 add_constraint(
-                    model, [1.0, -1.0, -0.5, -0.5, big_m_y, -big_m_y],
-                    [f"cy_{j}", f"cy_{i}", f"hEff_{i}", f"hEff_{j}", q_ij, q_ji],
-                    -big_m_y, "G",
+                    model, [1.0, -1.0, -0.5, -0.5, M_h, -M_h,
+                            -M_h, -M_h],
+                    [f"cy_{j}", f"cy_{i}", f"h_{i}", f"h_{j}",
+                     q_ij, q_ji, f"f_{i}", f"f_{j}"],
+                    -3 * M_h, "G",
                 )
         return model

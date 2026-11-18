@@ -1,6 +1,7 @@
 """Geometry and selection checks; no optimization models are built or solved."""
 
 import csv
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,9 @@ from instances import DEFAULT_INSTANCES
 from models.common.position_generator import generate_positions_xym
 from models.column_generation import initialization as initial
 from models.column_generation.orchestrator_services import (
-    InitialSliceGenerator, calculate_slice_height,
+    InitialSliceGenerator, ProblemNormalizer, calculate_slice_height,
 )
+from objects.ConfigData import ConfigData
 from models.column_generation.solution_pool import (
     InvalidPoolSolution, PricingGeometry, candidate_from_slice, slice_master_key,
 )
@@ -40,6 +42,36 @@ def catalog_instances():
         cases.extend((row["instance"], tuple(int(row[key]) for key in ("L", "W", "l", "w")))
                      for row in csv.DictReader(stream))
     return cases
+
+
+def assert_position_presence_matches_geometry(dimensions):
+    """Check placement existence independently of the normal-set arithmetic."""
+    width, height, item_width, item_height = dimensions
+    fits = ((item_width <= width and item_height <= height)
+            or (item_height <= width and item_width <= height))
+    problem = ProblemNormalizer().normalize(ConfigData(*dimensions))
+    width, height = problem.bin_width, problem.bin_height
+    item_width, item_height = problem.item_width, problem.item_height
+    normal, rotated = generate_positions_xym(width, height, item_width, item_height)
+    assert bool(normal or rotated) == fits, dimensions
+    # Squares use only the normal domain; other items retain each feasible orientation.
+    assert bool(normal) == (item_width <= width and item_height <= height), dimensions
+    assert bool(rotated) == (item_width != item_height
+                             and item_height <= width and item_width <= height), dimensions
+    for positions in (normal, rotated):
+        if positions:
+            assert (0, 0) in positions, dimensions
+
+
+def test_position_presence_exhaustively_for_small_dimensions():
+    # All 160,000 original dimension tuples, including tall bins/items and no-fit cases.
+    for dimensions in product(range(1, 21), repeat=4):
+        assert_position_presence_matches_geometry(dimensions)
+
+
+@pytest.mark.parametrize("name,dimensions", catalog_instances())
+def test_position_presence_matches_geometry_for_catalog_and_benchmark(name, dimensions):
+    assert_position_presence_matches_geometry(dimensions)
 
 
 @pytest.mark.parametrize("name,dimensions", catalog_instances())
