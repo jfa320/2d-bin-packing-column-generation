@@ -2,11 +2,12 @@
 
 import math
 import multiprocessing
+from functools import partial
 from queue import Empty, Queue
 from threading import Thread
 from time import perf_counter
 
-from utils.execution_result import ExecutionResult
+from utils.execution_result import ExecutionResult, MIPIncumbent
 from utils.paver_constants import PaverConstants
 
 
@@ -14,17 +15,21 @@ PAVER = PaverConstants
 
 
 class TimedModelExecutor:
-    def __init__(self, target, model_name, instance_factory=None, default_case_name=None):
+    def __init__(self, target, model_name, instance_factory=None, default_case_name=None,
+                 *, feasible_status=PAVER.MODEL_STATUS_FEASIBLE):
         self.target = target
         self.model_name = model_name
         self.instance_factory = instance_factory
         self.default_case_name = default_case_name
+        self.feasible_status = feasible_status
 
-    def execute_with_time_limit(self, max_time, instance=None):
+    def execute_with_time_limit(self, max_time, instance=None, **worker_options):
         start = perf_counter()
         if instance is None:
             instance = self._default_instance()
-        return execute_in_process(self.target, max_time, instance, self.model_name, start)
+        target = partial(self.target, **worker_options) if worker_options else self.target
+        return execute_in_process(target, max_time, instance, self.model_name, start,
+                                  feasible_status=self.feasible_status)
 
     def _default_instance(self):
         if self.instance_factory is None:
@@ -73,7 +78,8 @@ def _drain_results(reader, messages):
         messages.put(None)
 
 
-def execute_in_process(target, max_time, instance, model_name, start_time=None):
+def execute_in_process(target, max_time, instance, model_name, start_time=None,
+                       *, feasible_status=PAVER.MODEL_STATUS_FEASIBLE):
     start = perf_counter() if start_time is None else start_time
     result = ExecutionResult(
         instance["case_name"], model_name, None, PAVER.TERMINATION_ERROR, None, 0.0
@@ -82,6 +88,20 @@ def execute_in_process(target, max_time, instance, model_name, start_time=None):
     messages = Queue()
     timed_out = received = interrupted = False
     errors = []
+    incumbent = None
+
+    def consume(message):
+        nonlocal result, received, incumbent
+        if isinstance(message, ExecutionResult):
+            result = message
+            received = True
+            if message.error_message:
+                errors.append(message.error_message)
+        elif isinstance(message, MIPIncumbent):
+            incumbent = message.objective_value
+        else:
+            errors.append(f"Invalid worker message: {message!r}")
+
     try:
         if not math.isfinite(max_time):
             raise ValueError("max_time must be finite.")
@@ -112,19 +132,9 @@ def execute_in_process(target, max_time, instance, model_name, start_time=None):
                     process.join(max(0.0, deadline - perf_counter()))
                     timed_out = process.is_alive()
                     break
-                if isinstance(message, ExecutionResult):
-                    result = message
-                    received = True
-                    if message.error_message:
-                        errors.append(message.error_message)
-                else:
-                    errors.append(f"Invalid worker message: {message!r}")
+                consume(message)
     except KeyboardInterrupt:
         interrupted = True
-        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
-                               if result.objective_value is not None
-                               else PAVER.MODEL_STATUS_NO_SOLUTION)
-        result.termination_status = PAVER.TERMINATION_USER_INTERRUPT
         errors.append("Execution interrupted by user.")
     except Exception as exc:
         result.termination_status = PAVER.TERMINATION_ERROR
@@ -167,29 +177,26 @@ def execute_in_process(target, max_time, instance, model_name, start_time=None):
                 message = messages.get_nowait()
             except Empty:
                 break
-            if isinstance(message, ExecutionResult):
-                result = message
-                received = True
-                if message.error_message:
-                    errors.append(message.error_message)
-            elif message is not None:
-                errors.append(f"Invalid worker message: {message!r}")
+            if message is not None:
+                consume(message)
+    if (timed_out or interrupted) and result.objective_value is None:
+        result.objective_value = incumbent
     if not received and not timed_out and not errors:
         errors.append("Worker exited without a result.")
     if received and result.termination_status == PAVER.TERMINATION_ERROR and not errors:
         errors.append("Worker reported Error without a diagnostic.")
     if errors and result.termination_status != PAVER.TERMINATION_USER_INTERRUPT:
         result.termination_status = PAVER.TERMINATION_ERROR
-        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+        result.model_status = (feasible_status
                                if result.objective_value is not None
                                else PAVER.MODEL_STATUS_ERROR)
     if timed_out:
-        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+        result.model_status = (feasible_status
                                if result.objective_value is not None
                                else PAVER.MODEL_STATUS_NO_SOLUTION)
         result.termination_status = PAVER.TERMINATION_TIME_LIMIT
     if interrupted:
-        result.model_status = (PAVER.MODEL_STATUS_FEASIBLE
+        result.model_status = (feasible_status
                                if result.objective_value is not None
                                else PAVER.MODEL_STATUS_NO_SOLUTION)
         result.termination_status = PAVER.TERMINATION_USER_INTERRUPT

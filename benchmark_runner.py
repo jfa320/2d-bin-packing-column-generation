@@ -3,8 +3,7 @@
 The default report has 24 fields: the original 18 plus the essential phase
 times and diagnostics. --detailed-csv exports all 44 fields, including pricing
 evidence and independent solver statuses. Failed runs carry a diagnostic in
-their own row. A zero literature
-reference is rejected because its percentage gap is undefined.
+their own row. The default mode requires a positive literature reference.
 Gaps are signed: 100 * (reference - incumbent) / reference. CSV nulls are NA
 and floating-point values use exactly six decimal places.
 
@@ -15,15 +14,22 @@ the reference, not a global optimality certificate from the restricted master.
 
 Each run also creates <output_stem>_iterations.csv with individual attempts
 and <output_stem>_phases.csv with cumulative build/solve times and percentages.
+--compare-models adds separate LP and integer comparisons for the rotated MPLP.
 """
 
 import argparse
 from contextlib import ExitStack
 import csv
+from dataclasses import asdict
 from datetime import datetime
+import json
 import math
 from pathlib import Path
 import time
+
+from utils.comparison_report import (
+    INTEGER_FIELDS, LP_FIELDS, cg_comparison_rows, comparator_row, comparison_paths,
+)
 
 from utils.execution_result import (
     ColumnGenerationExecutionResult,
@@ -71,7 +77,7 @@ OUTPUT_FIELDS = BASE_OUTPUT_FIELDS + (
 DETAILED_OUTPUT_FIELDS = BASE_OUTPUT_FIELDS + DIAGNOSTIC_FIELDS
 
 
-def load_instances(filename, expected_count=None):
+def load_instances(filename, expected_count=None, *, allow_optional_reference=False):
     """Validate every CSV row and retain its order.
 
     ``expected_count`` is an optional assertion for controlled experiments;
@@ -106,12 +112,19 @@ def load_instances(filename, expected_count=None):
                 if value <= 0:
                     raise ValueError(f"Row {line}: {field} must be a positive integer")
                 row[field] = value
-            try:
-                reference = float(row["optimal_literature"])
-            except ValueError:
-                reference = float("nan")
-            if not math.isfinite(reference) or reference <= 0:
-                raise ValueError(f"Row {line}: optimal_literature must be positive and finite; zero gap denominator is undefined")
+            raw_reference = row["optimal_literature"]
+            if allow_optional_reference and raw_reference.upper() in ("", "NA"):
+                reference = None
+            else:
+                try:
+                    reference = float(raw_reference)
+                except ValueError:
+                    reference = float("nan")
+                if not math.isfinite(reference) or reference < 0 or (
+                        reference == 0 and not allow_optional_reference):
+                    requirement = ("nonnegative and finite, or NA" if allow_optional_reference
+                                   else "positive and finite")
+                    raise ValueError(f"Row {line}: optimal_literature must be {requirement}")
             row["optimal_literature"] = reference
             rows.append(row)
     if expected_count is not None and len(rows) != expected_count:
@@ -125,8 +138,9 @@ def result_row(instance, result):
     diagnostics = result.diagnostics
     incumbent = metrics.restricted_integer_master
     reference = instance["optimal_literature"]
-    gap = None if incumbent is None else 100 * (reference - incumbent) / reference
-    if incumbent is not None and incumbent > reference:
+    gap = (100 * (reference - incumbent) / reference
+           if incumbent is not None and reference is not None and reference > 0 else None)
+    if incumbent is not None and reference is not None and incumbent > reference:
         status = "REFERENCE_EXCEEDED"
     elif execution.termination_status == PAVER.TERMINATION_TIME_LIMIT:
         status = "TIMEOUT_NO_SOLUTION" if incumbent is None else "TIMEOUT_FEASIBLE"
@@ -136,6 +150,8 @@ def result_row(instance, result):
         status = "LP_OK_IP_FAIL"
     elif execution.termination_status != PAVER.TERMINATION_NORMAL or execution.error_message:
         status = "ERROR"
+    elif reference is None:
+        status = "FEASIBLE"
     else:
         status = "OPTIMAL" if incumbent == reference else "SUBOPTIMAL"
     phase_statuses = {
@@ -174,15 +190,16 @@ def _resolve_output_paths(output_path, trace_path, run_paver_after):
     return output, trace
 
 
-def _validate_distinct_paths(source, output, trace, pool=False):
-    paths = [source, *_output_targets(output, trace, pool)]
+def _validate_distinct_paths(source, output, trace, pool=False, compare_models=False):
+    paths = [source, *_output_targets(output, trace, pool, compare_models)]
     if len(set(paths)) != len(paths):
-        raise ValueError("Input, output, iteration, phase, and trace paths must be distinct")
+        raise ValueError("The input and all report and trace paths must be distinct")
 
 
-def _output_targets(output, trace, pool=False):
+def _output_targets(output, trace, pool=False, compare_models=False):
     return ([output, *report_paths(output)] + ([trace] if trace is not None else [])
-            + ([output.with_name(output.stem + "_pool.jsonl")] if pool else []))
+            + ([output.with_name(output.stem + "_pool.jsonl")] if pool else [])
+            + (list(comparison_paths(output)) if compare_models else []))
 
 
 def _confirm_overwrite(paths):
@@ -196,6 +213,44 @@ def _confirm_overwrite(paths):
     return response in {"s", "si", "sí", "y", "yes"}
 
 
+def _rotated_comparators():
+    from models.comparative import andrade_birgin_2013, pisinger_sigurd_2005_rotation
+
+    return pisinger_sigurd_2005_rotation, andrade_birgin_2013
+
+
+def _run_comparator(model, mode, max_time, instance, solver_options):
+    started = time.perf_counter()
+    try:
+        result = model.execute_with_time_limit(max_time, instance, mode=mode, **solver_options)
+        if not isinstance(result, ExecutionResult):
+            raise TypeError("A comparator must return ExecutionResult")
+    except Exception as error:
+        result = ExecutionResult(
+            instance["case_name"], model.MODEL_NAME, PAVER.MODEL_STATUS_ERROR,
+            PAVER.TERMINATION_ERROR, None, time.perf_counter() - started,
+            error_message=f"{type(error).__name__}: {error}",
+        )
+    return comparator_row(result, mode)
+
+
+def _write_comparison(streams, writers, instance, solver_instance, result, models,
+                      max_time, solver_options, cg_settings):
+    context = dict(instance, **solver_instance, max_time_s=max_time, **solver_options)
+    cg_settings = dict(cg_settings, use_dual_stabilization=result.diagnostics.use_dual_stabilization)
+    for stream, writer, mode, cg_row in zip(streams, writers, ("lp", "mip"),
+                                            cg_comparison_rows(result)):
+        rows = [dict(cg_row, settings=json.dumps(cg_settings, sort_keys=True))]
+        for model in models:
+            rows.append(_run_comparator(model, mode, max_time, solver_instance, solver_options))
+        for row in rows:
+            values = dict(context, **row)
+            writer.writerow({
+                field: format_csv_value(values.get(field)) for field in writer.fieldnames
+            })
+        stream.flush()
+
+
 def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   expected_count=None, trace_path=None, execute=None,
                   run_paver_after=False, paver_path=None, paver_output=None,
@@ -203,7 +258,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   random_seed=None, threads=None,
                   use_pricing_second_phase=None, use_pricing_final_enrichment=None,
                   use_pricing_duplicate_retries=None, initialization=None,
-                  initial_mixed_max_columns=None):
+                  initial_mixed_max_columns=None, compare_models=False):
     """Write outputs and return the report Path; execute is a CG test seam.
 
     Relative output/trace paths are relative to the working directory. Solver
@@ -212,6 +267,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     detailed_csv includes all per-phase statuses and convergence evidence.
     Iteration history and cumulative phase percentages are always exported in
     separate CSVs beside the principal report, with one flush per instance.
+    compare_models adds LP and integer CSVs using the rotated comparators.
     """
     if not math.isfinite(max_time) or max_time <= 0:
         raise ValueError("max_time must be positive and finite")
@@ -225,18 +281,35 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     if pool_options is _DEFAULT_POOL_OPTIONS:
         from models.column_generation.solution_pool import PricingPoolOptions
         pool_options = PricingPoolOptions()
+    elif pool_options is not None:
+        from models.column_generation.solution_pool import PricingPoolOptions
+        if not isinstance(pool_options, PricingPoolOptions):
+            raise ValueError("pool_options must be PricingPoolOptions")
     source = Path(input_path).resolve()
     output, trace = _resolve_output_paths(output_path, trace_path, run_paver_after)
-    _validate_distinct_paths(source, output, trace, pool_options is not None)
-    targets = _output_targets(output, trace, pool_options is not None)
+    _validate_distinct_paths(source, output, trace, pool_options is not None, compare_models)
+    targets = _output_targets(output, trace, pool_options is not None, compare_models)
     for target in targets:
         if target.exists():
             if not overwrite:
                 raise FileExistsError(f"Output already exists: {target}")
-    instances = load_instances(source, expected_count)
+    instances = load_instances(source, expected_count, allow_optional_reference=compare_models)
     if execute is None:
         from models.column_generation.column_generation_solver import execute_with_time_limit
         execute = execute_with_time_limit
+    solver_options = {key: value for key, value in
+                      (("random_seed", random_seed), ("threads", threads)) if value is not None}
+    if compare_models:
+        from config import USE_GREEDY_PRICING
+
+        comparators = _rotated_comparators()
+        cg_controls = dict(pricing_mode="reuse", use_greedy_pricing=USE_GREEDY_PRICING)
+        cg_settings = dict(
+            **cg_controls, **initial_options.as_kwargs(), **heuristics.as_kwargs(),
+            pricing_pool=asdict(pool_options) if pool_options is not None else None,
+        )
+    else:
+        cg_controls = {}
     output.parent.mkdir(parents=True, exist_ok=True)
     output_mode = "w" if overwrite else "x"
     report_fields = DETAILED_OUTPUT_FIELDS if detailed_csv else OUTPUT_FIELDS
@@ -244,14 +317,9 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     with ExitStack() as stack:
         pool_stream = None
         if pool_options is not None:
-            import json
             import hashlib
             import platform
             import sys
-            from dataclasses import asdict
-            from models.column_generation.solution_pool import PricingPoolOptions
-            if not isinstance(pool_options, PricingPoolOptions):
-                raise ValueError("pool_options must be PricingPoolOptions")
             pool_stream = stack.enter_context(output.with_name(
                 output.stem + "_pool.jsonl").open(output_mode, encoding="utf-8"))
             pool_source_names = (
@@ -277,6 +345,17 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
         writer.writeheader()
         iteration_writer.writeheader()
         phase_writer.writeheader()
+        if compare_models:
+            comparison_streams = [
+                stack.enter_context(path.open(output_mode, newline="", encoding="utf-8"))
+                for path in comparison_paths(output)
+            ]
+            comparison_writers = [csv.DictWriter(stream, fieldnames=fields)
+                                  for stream, fields in zip(comparison_streams,
+                                                            (LP_FIELDS, INTEGER_FIELDS))]
+            for comparison_stream, comparison_writer in zip(comparison_streams, comparison_writers):
+                comparison_writer.writeheader()
+                comparison_stream.flush()
         stream.flush()
         iteration_stream.flush()
         phase_stream.flush()
@@ -303,12 +382,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 else:
                     # --pool-mode off remains a one-column control regardless of config.
                     options["use_pricing_pool"] = False
-                if random_seed is not None:
-                    options["random_seed"] = random_seed
-                if threads is not None:
-                    options["threads"] = threads
                 result = execute(max_time, instance=solver_instance,
-                                 **heuristics.as_kwargs(), **options)
+                                 **heuristics.as_kwargs(), **options, **solver_options, **cg_controls)
                 if not isinstance(result, ColumnGenerationExecutionResult):
                     raise TypeError("CG must return ColumnGenerationExecutionResult")
             except Exception as error:
@@ -351,6 +426,9 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 pool_stream.flush()
             if trace_writer is not None:
                 trace_writer.write_trace_record(result)
+            if compare_models:
+                _write_comparison(comparison_streams, comparison_writers, instance, solver_instance,
+                                  result, comparators, max_time, solver_options, cg_settings)
     if run_paver_after:
         paver_result = execute_paver(
             trace,
@@ -370,8 +448,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", default=DEFAULT_INPUT)
     parser.add_argument("--output")
+    parser.add_argument("--compare-models", action="store_true",
+                        help="Also write separate LP and integer CSVs for the three rotated models.")
     parser.add_argument("--trace")
-    parser.add_argument("--time", type=float, default=1200, help="Seconds per instance")
+    parser.add_argument("--time", type=float, default=1200, help="Seconds per run")
     parser.add_argument("--detailed-csv", action="store_true",
                         help="Export all 44 diagnostic fields instead of the default 24.")
     parser.add_argument("--expected-count", type=int, default=None,
@@ -437,11 +517,13 @@ def main(argv=None):
         args.output, args.trace, args.run_paver,
     )
     try:
-        _validate_distinct_paths(source, output_path, trace_path, pool_options is not None)
+        _validate_distinct_paths(source, output_path, trace_path, pool_options is not None,
+                                 args.compare_models)
     except ValueError as error:
         parser.error(str(error))
 
-    output_targets = _output_targets(output_path, trace_path, pool_options is not None)
+    output_targets = _output_targets(output_path, trace_path, pool_options is not None,
+                                     args.compare_models)
     existing_outputs = [path for path in output_targets if path.exists()]
     overwrite = False
     if existing_outputs:
@@ -457,6 +539,8 @@ def main(argv=None):
             optional_settings["random_seed"] = args.seed
         if args.threads is not None:
             optional_settings["threads"] = args.threads
+        if args.compare_models:
+            optional_settings["compare_models"] = True
         output = run_benchmark(args.input, output_path, max_time=args.time,
                                expected_count=args.expected_count, trace_path=trace_path,
                                run_paver_after=args.run_paver,
@@ -469,6 +553,9 @@ def main(argv=None):
     print(output)
     for path in report_paths(output):
         print(path)
+    if args.compare_models:
+        for path in comparison_paths(output):
+            print(path)
     return 0
 
 

@@ -2,11 +2,14 @@ import csv
 import subprocess
 import sys
 import json
+from multiprocessing import get_context
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import benchmark_runner as runner
+from utils.comparison_report import INTEGER_FIELDS, LP_FIELDS, cg_comparison_rows, comparison_paths
 from utils.execution_result import (
     ColumnGenerationExecutionResult, ColumnGenerationMetrics, ExecutionResult,
     ColumnGenerationDiagnostics, ColumnGenerationIteration, SolverPhaseStatus,
@@ -93,6 +96,93 @@ def read_sidecar(path, fields):
         reader = csv.DictReader(stream)
         assert reader.fieldnames == list(fields)
         return list(reader)
+
+
+def _cg_worker_with_delayed_integer_master(*args, **kwargs):
+    import time
+    from models.column_generation import column_generation_solver as cg
+
+    solve_master = cg.solve_master_model
+
+    def delayed(model, queue, manual_interruption, relax_model, initial_time):
+        if not relax_model:
+            time.sleep(30)
+        return solve_master(model, queue, manual_interruption, relax_model, initial_time)
+
+    cg.solve_master_model = delayed
+    try:
+        return cg.orchestrator(*args, **kwargs)
+    finally:
+        cg.solve_master_model = solve_master
+
+
+def test_comparison_preserves_certified_lp_when_integer_master_times_out(tmp_path, monkeypatch):
+    pytest.importorskip("cplex")
+    from models.column_generation import column_generation_solver as cg
+
+    monkeypatch.setattr(cg, "multiprocessing", get_context("spawn"))
+    monkeypatch.setattr(cg, "orchestrator", _cg_worker_with_delayed_integer_master)
+
+    def fake_ps(max_time, instance, *, mode, random_seed, threads):
+        assert (max_time, random_seed, threads) == (6, 2, 1)
+        return ExecutionResult(instance["case_name"], "PS", 7 if mode == "lp" else 8,
+                               "TimeLimit", 1, 6, raw_cplex_status=11 if mode == "lp" else 107)
+
+    def fake_ab(max_time, instance, *, mode, **options):
+        if mode == "lp":
+            raise ValueError("failed LP")
+        return ExecutionResult(instance["case_name"], "AB", 1, "Normal", 1, 0.5, 101)
+
+    monkeypatch.setattr(runner, "_rotated_comparators", lambda: (
+        SimpleNamespace(MODEL_NAME="PS", execute_with_time_limit=fake_ps),
+        SimpleNamespace(MODEL_NAME="AB", execute_with_time_limit=fake_ab),
+    ))
+    source = write_input(tmp_path / "input.csv", 1, {
+        "L": 3, "W": 3, "l": 2, "w": 2, "optimal_literature": "NA",
+    })
+    output = runner.run_benchmark(source, tmp_path / "report.csv", max_time=6,
+                                  compare_models=True, random_seed=2, threads=1)
+    lp_path, integer_path = comparison_paths(output)
+    cg_lp, ps_lp, ab_lp = read_sidecar(lp_path, LP_FIELDS)
+    cg_integer, ps_integer, ab_integer = read_sidecar(integer_path, INTEGER_FIELDS)
+
+    assert cg_lp["value"] == cg_lp["rmp_value"] == "1.000000"
+    assert cg_lp["value_kind"] == "certified_lp"
+    assert cg_lp["termination_status"] == "Normal"
+    assert cg_lp["run_termination_status"] == "TimeLimit"
+    assert cg_lp["time_basis"] == "wall_until_certificate"
+    assert 0 < float(cg_lp["time_s"]) < 6
+    assert cg_lp["optimal_literature"] == "NA"
+    assert (cg_lp["bin_width"], cg_lp["bin_height"], cg_lp["item_width"], cg_lp["item_height"]) == (
+        "3", "3", "2", "2",
+    )
+    assert json.loads(cg_lp["settings"])["pricing_pool"]["max_columns"] == 5
+    assert (cg_integer["value"], cg_integer["value_kind"], cg_integer["termination_status"]) == (
+        "NA", "unavailable", "TimeLimit",
+    )
+    assert (ps_lp["value"], ps_lp["lp_primal_value"], ps_lp["termination_status"]) == (
+        "NA", "1", "TimeLimit",
+    )
+    assert (ps_integer["value"], ps_integer["value_kind"], ps_integer["threads"]) == (
+        "1", "incumbent", "1",
+    )
+    assert ab_lp["termination_status"] == "Error"
+    assert ab_lp["value"] == "NA"
+    assert ab_lp["error_message"] == "ValueError: failed LP"
+    assert ab_integer["value_kind"] == "optimal"
+
+
+def test_report_keeps_rmp_separate_when_cg_stops_without_a_certificate():
+    result = make_result(ip=2, lp=3)
+    result.diagnostics.cg_stop_reason = "duplicate"
+    result.diagnostics.lp_status = SolverPhaseStatus(1, "Normal", 1)
+    result.diagnostics.integer_master_status = SolverPhaseStatus(1, "Normal", 101)
+
+    lp, integer = cg_comparison_rows(result)
+    assert (lp["value"], lp["rmp_value"], lp["value_kind"], lp["stop_reason"]) == (
+        None, 3, "partial_rmp", "duplicate",
+    )
+    assert (integer["value"], integer["value_kind"]) == (2, "restricted_integer")
 
 
 def test_all_csv_rows_order_flags_dimensions_metrics_and_flush(tmp_path):

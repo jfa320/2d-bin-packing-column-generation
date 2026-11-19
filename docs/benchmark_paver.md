@@ -134,6 +134,35 @@ Guarda controles, snapshots y reportes en un directorio nuevo de `Results/`.
 Los replays tienen un presupuesto separado y no miden una aceleración de la
 generación múltiple. `--seeds` permite seleccionar las semillas.
 
+## Comparación LP y entera
+
+Con `--compare-models`, el benchmark ejecuta CG, Pisinger–Sigurd con rotación
+y Andrade–Birgin sobre las mismas instancias. Usá un CSV con el formato de
+entrada del benchmark. Este modo admite `0` o `NA` en `optimal_literature`;
+en ambos casos el gap porcentual de CG queda como `NA`.
+
+```powershell
+python benchmark_runner.py --compare-models --input benchmark_validation_baseline.csv --output Results/rotados.csv --time 60 --seed 2 --threads 1 --no-paver
+```
+
+- `rotados_lp.csv` pone las cotas certificadas en `value`. El último maestro
+  restringido de CG queda en `rmp_value`, y el objetivo primal de un
+  comparador con LP inconcluso, en `lp_primal_value`. El tiempo de un LP de CG
+  certificado se mide hasta recibir la prueba del pricing o determinar el
+  dominio vacío. Un timeout posterior del maestro entero conserva esa prueba.
+- `rotados_integer.csv` informa el valor factible y su garantía en
+  `value_kind`: `optimal`, `incumbent`, `restricted_integer` o
+  `unavailable`. Para CG, `integer_master_time_s` mide su fase entera y
+  `time_s` la ejecución completa.
+
+Cada fila registra el límite, la semilla y los hilos solicitados. Si se
+omiten semilla o hilos, se usan los valores predeterminados de CPLEX.
+Cada comparador tiene una corrida LP y una MIP con el límite indicado.
+CG comparte su límite entre la generación de columnas y el maestro entero.
+`termination_status` describe el resultado de la fase, mientras que
+`run_termination_status` describe la corrida completa.
+Las trazas y PAVER siguen reportando los resultados habituales de CG.
+
 ## Objetivos y estados
 
 Los objetivos ausentes se escriben como `NA`, los tiempos con seis decimales

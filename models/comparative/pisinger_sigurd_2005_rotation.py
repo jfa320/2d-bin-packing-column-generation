@@ -6,10 +6,13 @@ The Section 2, equation (4) formulation is adapted to a single bin, maximizing
 the number of identical items, and extended with ninety-degree rotations.
 """
 
+from functools import partial
+
 import cplex
 from instances import CaseRepository
 from utils.model_functions import *
 from utils.execution_runner import TimedModelExecutor
+from utils.model_runner import solve_lp_model
 from config import *
 
 MODEL_NAME = "PisingerSigurd2005Rotation"
@@ -24,9 +27,12 @@ def apply_instance(instance):
     ITEM_HEIGHT = instance["item_height"]
 
 
-def run_model_for_instance(queue, max_time, instance):
+def run_model_for_instance(queue, max_time, instance, *, mode="mip", random_seed=None, threads=None):
     apply_instance(instance)
-    run_model(create_model, solve_model, queue, max_time, CASE_NAME, MODEL_NAME)
+    solve = (partial(solve_lp_model, case_name=CASE_NAME, model_name=MODEL_NAME)
+             if mode == "lp" else solve_model)
+    run_model(create_model, solve, queue, max_time, CASE_NAME, MODEL_NAME,
+              report_mip_incumbents=mode == "mip", random_seed=random_seed, threads=threads)
 
 
 def calculate_physical_item_bound():
@@ -132,10 +138,18 @@ def solve_model(model):
     return solve_mip_model(model, CASE_NAME, MODEL_NAME)
 
 
-_EXECUTOR = TimedModelExecutor(
-    run_model_for_instance, MODEL_NAME, get_instance, lambda: CASE_NAME
-)
+_EXECUTORS = {
+    "mip": TimedModelExecutor(run_model_for_instance, MODEL_NAME, get_instance, lambda: CASE_NAME),
+    "lp": TimedModelExecutor(partial(run_model_for_instance, mode="lp"), MODEL_NAME,
+                             get_instance, lambda: CASE_NAME,
+                             feasible_status=PAVER.MODEL_STATUS_LP_FEASIBLE),
+}
 
 
-def execute_with_time_limit(max_time, instance=None) -> ExecutionResult:
-    return _EXECUTOR.execute_with_time_limit(max_time, instance)
+def execute_with_time_limit(max_time, instance=None, *, mode="mip",
+                            random_seed=None, threads=None) -> ExecutionResult:
+    """Solve the integer model or its continuous relaxation within a wall limit."""
+    if mode not in ("mip", "lp"):
+        raise ValueError("mode must be 'mip' or 'lp'")
+    return _EXECUTORS[mode].execute_with_time_limit(
+        max_time, instance, random_seed=random_seed, threads=threads)

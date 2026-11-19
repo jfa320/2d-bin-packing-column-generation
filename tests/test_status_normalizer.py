@@ -1,6 +1,7 @@
 import importlib
 import time
 from dataclasses import asdict
+from multiprocessing import get_context
 from unittest.mock import Mock
 
 import pytest
@@ -9,6 +10,7 @@ from utils.execution_result import (
     ColumnGenerationExecutionResult,
     ColumnGenerationMetrics,
     ExecutionResult,
+    MIPIncumbent,
 )
 from utils.execution_runner import TimedModelExecutor, execute_in_process
 from utils.status_normalizer import map_cplex_lp_status, map_cplex_mip_status
@@ -222,10 +224,33 @@ def _worker_incumbent_then_sleep(queue, max_time, instance):
     time.sleep(30)
 
 
-def test_runner_preserves_recovered_incumbent_at_deadline():
-    result = execute_in_process(_worker_incumbent_then_sleep, 2, {"case_name": "test"}, "parent")
-    assert (result.model_status, result.termination_status, result.objective_value) == (8, "TimeLimit", 0.0)
+@pytest.mark.parametrize("feasible_status", [8, 7], ids=["mip", "lp"])
+def test_runner_preserves_recovered_incumbent_at_deadline(feasible_status):
+    result = execute_in_process(
+        _worker_incumbent_then_sleep, 2, {"case_name": "test"}, "parent",
+        feasible_status=feasible_status,
+    )
+    assert (result.model_status, result.termination_status, result.objective_value) == (
+        feasible_status, "TimeLimit", 0.0,
+    )
     assert 2 <= result.total_time_s < 5
+
+
+def _worker_reports_incumbents_during_solve(queue, max_time, instance):
+    queue.put(MIPIncumbent(0.0))
+    queue.put(MIPIncumbent(13.0))
+    time.sleep(30)
+
+
+def test_runner_preserves_latest_incumbent_without_final_result():
+    result = execute_in_process(
+        _worker_reports_incumbents_during_solve, 2, {"case_name": "test"}, "parent"
+    )
+    assert result.termination_status == "TimeLimit"
+    assert result.model_status == 8
+    assert result.objective_value == 13.0
+    assert result.raw_cplex_status is None
+    assert result.error_message is None
 
 
 def test_runner_drains_large_message_before_join():
@@ -356,6 +381,31 @@ def test_comparative_public_contract(module_name):
     assert 0 < result.total_time_s < 10
     timeout = module.execute_with_time_limit(0, instance)
     assert (timeout.model_status, timeout.termination_status, timeout.objective_value) == (9, "TimeLimit", None)
+
+
+@pytest.mark.parametrize("module_name", [
+    "pisinger_sigurd_2005_rotation", "andrade_birgin_2013",
+])
+def test_comparative_lp_mode_and_default_mip_use_the_same_instance(monkeypatch, module_name):
+    pytest.importorskip("cplex")
+    from utils import execution_runner
+
+    monkeypatch.setattr(execution_runner, "multiprocessing", get_context("spawn"))
+    model = importlib.import_module(f"models.comparative.{module_name}")
+    instance = dict(case_name="lp_gap", bin_width=3, bin_height=3, item_width=2, item_height=2)
+
+    lp = model.execute_with_time_limit(10, instance, mode="lp")
+    mip = model.execute_with_time_limit(10, instance)
+
+    for result, objective, raw_status in ((lp, 2, 1), (mip, 1, 101)):
+        assert result.case_name == instance["case_name"]
+        assert result.model_name == model.MODEL_NAME
+        assert result.termination_status == "Normal"
+        assert result.model_status == 1
+        assert result.raw_cplex_status == raw_status
+        assert result.objective_value == pytest.approx(objective)
+        assert 0 < result.total_time_s < 10
+        assert result.error_message is None
 
 
 def test_model_names_are_unique():

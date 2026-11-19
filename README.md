@@ -231,7 +231,7 @@ Desde la raíz del repositorio, ejecutar:
 python benchmark_runner.py --input "benchmark_validation_baseline.csv" --output "Results\benchmark.csv" --trace "Results\benchmark.trc" --time 300
 ```
 
-El runner procesa todas las filas del CSV de entrada y ejecuta sólo generación de columnas. Las heurísticas de finalización están desactivadas por defecto y se controlan por separado con `--pricing-second-phase`, `--pricing-final-enrichment` y `--pricing-duplicate-retries`; el pool permanece activo. El parámetro `--time` define el límite de pared compartido por CG y el maestro entero para cada instancia. Un entero `NA` por timeout o interrupción no acredita una solución entera subóptima.
+El runner procesa todas las filas del CSV de entrada y por defecto ejecuta sólo generación de columnas. Las heurísticas de finalización están desactivadas por defecto y se controlan por separado con `--pricing-second-phase`, `--pricing-final-enrichment` y `--pricing-duplicate-retries`; el pool permanece activo. El parámetro `--time` define el límite de pared compartido por CG y el maestro entero para cada instancia. Un entero `NA` por timeout o interrupción no acredita una solución entera subóptima. Con `--compare-models` también ejecuta PS rotado y Andrade–Birgin, y genera los [reportes comparativos LP y entero](docs/benchmark_paver.md#comparación-lp-y-entera).
 Al finalizar, ejecuta PAVER usando la ruta configurada en `paver.properties`.
 El informe queda en `Results\benchmark_paver\index.html` cuando la traza se
 llama `Results\benchmark.trc`.

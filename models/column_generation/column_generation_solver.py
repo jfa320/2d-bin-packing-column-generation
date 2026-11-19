@@ -110,10 +110,12 @@ def calculate_real_reduced_cost(slice_, dual_prices, w, h):
 class _CGProgress:
     supports_cg_timing = True
 
-    def __init__(self, queue, case_name, started, structured, record_iterations=True):
+    def __init__(self, queue, case_name, started, structured, record_iterations=True,
+                 *, wall_started=None):
         self.queue = queue
         self.case_name = case_name
         self.started = started
+        self.wall_started = started if wall_started is None else wall_started
         self.structured = structured
         self.metrics = ColumnGenerationMetrics()
         self.diagnostics = ColumnGenerationDiagnostics(active_phase="preparation")
@@ -288,6 +290,7 @@ class _CGProgress:
                 self.diagnostics = replace(
                     self.diagnostics, lp_convergence_proven=False, convergence_basis=None,
                     pricing_objective=None, pricing_best_bound=None,
+                    lp_certificate_time_s=None,
                 )
         self.snapshot()
 
@@ -306,6 +309,7 @@ class _CGProgress:
         self.diagnostics = replace(
             self.diagnostics, cg_stop_reason="empty_domain",
             lp_convergence_proven=True, convergence_basis="empty_domain",
+            lp_certificate_time_s=time.perf_counter() - self.wall_started,
         )
         self.finish()
 
@@ -354,6 +358,7 @@ class _CGProgress:
         if basis is not None:
             self.diagnostics = replace(
                 self.diagnostics, lp_convergence_proven=True, convergence_basis=basis,
+                lp_certificate_time_s=time.perf_counter() - self.wall_started,
             )
 
     def snapshot(self):
@@ -464,9 +469,12 @@ def orchestrator(queue, manual_interruption, max_time, initial_time, config_data
                  pool_options=None, random_seed=None, threads=None, use_pricing_pool=None,
                  use_greedy_pricing=None, use_pricing_second_phase=None,
                  use_pricing_final_enrichment=None, use_pricing_duplicate_retries=None,
-                 initialization=None, initial_mixed_max_columns=None):
+                 initialization=None, initial_mixed_max_columns=None, wall_started=None):
     """Run CG with one persistent pricing instance, including auxiliary searches."""
-    progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured, record_iterations)
+    progress = _CGProgress(queue, case_name, time.perf_counter(), return_structured,
+                           record_iterations, wall_started=wall_started)
+    progress.diagnostics = replace(
+        progress.diagnostics, use_dual_stabilization=config.USE_DUAL_STABILIZATION)
     queue = progress
     pricing_session = None
     try:
@@ -1002,7 +1010,7 @@ def execute_with_time_limit(max_time, instance=None, *,
                     "record_iterations": record_iterations, "pricing_mode": pricing_mode,
                     "pool_options": pool_options, "random_seed": random_seed,
                     "threads": threads, "use_pricing_pool": pool_options is not None,
-                    "use_greedy_pricing": use_greedy_pricing})
+                    "use_greedy_pricing": use_greedy_pricing, "wall_started": started})
         process.start()
         def consume(message):
             nonlocal result, completed

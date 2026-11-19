@@ -16,6 +16,13 @@ class ExecutionResult:
     error_message: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class MIPIncumbent:
+    """Feasible objective reported during a MIP solve."""
+
+    objective_value: float
+
+
 @dataclass
 class ColumnGenerationMetrics:
     lp_value: Optional[float] = None
@@ -130,6 +137,8 @@ class ColumnGenerationDiagnostics:
     pool_raw_status: Optional[int] = None
     pool_last_error: Optional[str] = None
     initial_lp_status: SolverPhaseStatus = field(default_factory=SolverPhaseStatus)
+    lp_certificate_time_s: Optional[float] = None
+    use_dual_stabilization: Optional[bool] = None
 
 
 @dataclass
