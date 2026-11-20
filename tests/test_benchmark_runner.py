@@ -172,6 +172,36 @@ def test_comparison_preserves_certified_lp_when_integer_master_times_out(tmp_pat
     assert ab_integer["value_kind"] == "optimal"
 
 
+def test_cli_comparison_skips_comparator_mips(tmp_path, monkeypatch):
+    pytest.importorskip("cplex")
+    from models.column_generation import column_generation_solver as cg
+
+    source = write_input(tmp_path / "input.csv", 1)
+    output = tmp_path / "report.csv"
+    monkeypatch.setattr(cg, "execute_with_time_limit", lambda *args, **kwargs: make_result())
+    calls = []
+
+    def comparator(name):
+        def execute(max_time, instance, *, mode):
+            calls.append((name, mode))
+            return ExecutionResult(instance["case_name"], name, 1, "Normal", 25, 0.5)
+
+        return SimpleNamespace(MODEL_NAME=name, execute_with_time_limit=execute)
+
+    monkeypatch.setattr(runner, "_rotated_comparators", lambda: (comparator("PS"), comparator("AB")))
+
+    assert runner.main(["--input", str(source), "--output", str(output), "--no-paver",
+                        "--compare-models", "--no-comparator-mip"]) == 0
+    assert calls == [("PS", "lp"), ("AB", "lp")]
+    lp_path, integer_path = comparison_paths(output)
+    assert [row["model"] for row in read_sidecar(lp_path, LP_FIELDS)] == [
+        "Model5Orchestrator", "PS", "AB",
+    ]
+    integer, = read_sidecar(integer_path, INTEGER_FIELDS)
+    assert integer["model"] == "Model5Orchestrator"
+    assert integer["value_kind"] == "restricted_integer"
+
+
 def test_report_keeps_rmp_separate_when_cg_stops_without_a_certificate():
     result = make_result(ip=2, lp=3)
     result.diagnostics.cg_stop_reason = "duplicate"

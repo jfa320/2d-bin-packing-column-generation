@@ -15,6 +15,7 @@ the reference, not a global optimality certificate from the restricted master.
 Each run also creates <output_stem>_iterations.csv with individual attempts
 and <output_stem>_phases.csv with cumulative build/solve times and percentages.
 --compare-models adds separate LP and integer comparisons for the rotated MPLP.
+--no-comparator-mip keeps the integer report limited to CG.
 """
 
 import argparse
@@ -235,14 +236,15 @@ def _run_comparator(model, mode, max_time, instance, solver_options):
 
 
 def _write_comparison(streams, writers, instance, solver_instance, result, models,
-                      max_time, solver_options, cg_settings):
+                      max_time, solver_options, cg_settings, *, run_comparator_mip):
     context = dict(instance, **solver_instance, max_time_s=max_time, **solver_options)
     cg_settings = dict(cg_settings, use_dual_stabilization=result.diagnostics.use_dual_stabilization)
     for stream, writer, mode, cg_row in zip(streams, writers, ("lp", "mip"),
                                             cg_comparison_rows(result)):
         rows = [dict(cg_row, settings=json.dumps(cg_settings, sort_keys=True))]
-        for model in models:
-            rows.append(_run_comparator(model, mode, max_time, solver_instance, solver_options))
+        if mode == "lp" or run_comparator_mip:
+            rows.extend(_run_comparator(model, mode, max_time, solver_instance, solver_options)
+                        for model in models)
         for row in rows:
             values = dict(context, **row)
             writer.writerow({
@@ -258,7 +260,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                   random_seed=None, threads=None,
                   use_pricing_second_phase=None, use_pricing_final_enrichment=None,
                   use_pricing_duplicate_retries=None, initialization=None,
-                  initial_mixed_max_columns=None, compare_models=False):
+                  initial_mixed_max_columns=None, compare_models=False, run_comparator_mip=True):
     """Write outputs and return the report Path; execute is a CG test seam.
 
     Relative output/trace paths are relative to the working directory. Solver
@@ -268,6 +270,7 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
     Iteration history and cumulative phase percentages are always exported in
     separate CSVs beside the principal report, with one flush per instance.
     compare_models adds LP and integer CSVs using the rotated comparators.
+    run_comparator_mip=False keeps only the CG result in the integer CSV.
     """
     if not math.isfinite(max_time) or max_time <= 0:
         raise ValueError("max_time must be positive and finite")
@@ -428,7 +431,8 @@ def run_benchmark(input_path=DEFAULT_INPUT, output_path=None, *, max_time=1200,
                 trace_writer.write_trace_record(result)
             if compare_models:
                 _write_comparison(comparison_streams, comparison_writers, instance, solver_instance,
-                                  result, comparators, max_time, solver_options, cg_settings)
+                                  result, comparators, max_time, solver_options, cg_settings,
+                                  run_comparator_mip=run_comparator_mip)
     if run_paver_after:
         paver_result = execute_paver(
             trace,
@@ -450,6 +454,8 @@ def main(argv=None):
     parser.add_argument("--output")
     parser.add_argument("--compare-models", action="store_true",
                         help="Also write separate LP and integer CSVs for the three rotated models.")
+    parser.add_argument("--no-comparator-mip", action="store_true",
+                        help="With --compare-models, run comparator LPs and keep only the CG integer.")
     parser.add_argument("--trace")
     parser.add_argument("--time", type=float, default=1200, help="Seconds per run")
     parser.add_argument("--detailed-csv", action="store_true",
@@ -489,6 +495,8 @@ def main(argv=None):
     parser.add_argument("--paver-output", default=None,
                         help="Directory for the PAVER HTML report.")
     args = parser.parse_args(argv)
+    if args.no_comparator_mip and not args.compare_models:
+        parser.error("--no-comparator-mip requires --compare-models")
     from models.column_generation.initialization import resolve_initialization
     try:
         initial_options = resolve_initialization(args.initialization, args.initial_mixed_max_columns)
@@ -541,6 +549,7 @@ def main(argv=None):
             optional_settings["threads"] = args.threads
         if args.compare_models:
             optional_settings["compare_models"] = True
+            optional_settings["run_comparator_mip"] = not args.no_comparator_mip
         output = run_benchmark(args.input, output_path, max_time=args.time,
                                expected_count=args.expected_count, trace_path=trace_path,
                                run_paver_after=args.run_paver,

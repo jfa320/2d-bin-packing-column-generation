@@ -159,6 +159,9 @@ Cada fila registra el límite, la semilla y los hilos solicitados. Si se
 omiten semilla o hilos, se usan los valores predeterminados de CPLEX.
 Cada comparador tiene una corrida LP y una MIP con el límite indicado.
 CG comparte su límite entre la generación de columnas y el maestro entero.
+Para una campaña centrada en las relajaciones, combinar `--compare-models`
+con `--no-comparator-mip`. El CSV de LP incluye los tres modelos y el CSV
+entero conserva solo el maestro restringido de CG.
 `termination_status` describe el resultado de la fase, mientras que
 `run_termination_status` describe la corrida completa.
 Las trazas y PAVER siguen reportando los resultados habituales de CG.
